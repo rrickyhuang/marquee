@@ -6,10 +6,11 @@ Context for AI assistants working on this repo. Personal, user-specific data
 in this file should contain personal data; keep it that way.
 
 ## About this project
-Marquee — scrapes local theatre showtimes and emails a weekly digest of Letterboxd
-watchlist matches. A separate `recommendations.py` script generates monthly AI-powered
-film recommendations. User-specific settings (theatres, taste profile, email, location,
-thresholds) live in `config.yaml`.
+Marquee — scrapes local theatre showtimes and emails a digest of Letterboxd
+watchlist matches, covering the next few days (`watchlist.lookahead_days`). A separate
+`recommendations.py` script generates monthly AI-powered film recommendations.
+User-specific settings (theatres, taste profile, email, location, thresholds) live in
+`config.yaml`.
 
 ## Workflow note
 Discuss changes in chat before implementing; Claude Code handles execution only.
@@ -36,7 +37,9 @@ homepage URL (for email links). Find CinemaClock URLs at https://www.cinemaclock
 - Export ZIP: drop any `letterboxd-*.zip` into the project folder; scripts auto-select the most recently modified one. Gitignored.
 
 ## Email & Scheduling
-- Weekly digest: `watchlist_checker.py` — day/time from `config.yaml` (`watchlist.schedule_*`), via Windows Task Scheduler
+- Watchlist digest: `watchlist_checker.py` — runs every `watchlist.schedule_interval_days`
+  at `watchlist.schedule_time` (Windows Task Scheduler, `/sc daily /mo N`). Kept in step
+  with `watchlist.lookahead_days` so runs cover the calendar without gaps or overlap.
 - Monthly recommendations: `recommendations.py` — day(s)/time from `config.yaml` (`recommendations.schedule_*`), via Windows Task Scheduler
 - Secrets in `.env`: `GMAIL_APP_PASSWORD`, `ANTHROPIC_API_KEY` (see `.env.example`)
 - Email addresses and all other settings in `config.yaml`

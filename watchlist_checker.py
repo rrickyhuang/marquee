@@ -29,6 +29,7 @@ from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 from html.parser import HTMLParser
 
 import yaml
@@ -450,6 +451,227 @@ def group_by_film(entries):
     return sorted(result, key=lambda f: f["title"])
 
 
+# ── EMAIL STYLE — "Marquee" ticket/marquee visual identity ────────────────────
+# Plain system fonts only (Georgia/Arial/Courier New) — no @font-face, since
+# Gmail/Outlook strip embedded webfonts.
+#
+# Light mode only. Gmail's mobile app runs its own automatic dark-mode
+# re-coloring pass over emails regardless of the <meta color-scheme> hint or
+# an explicit @media (prefers-color-scheme: dark) block — an intentional dark
+# palette was tried and abandoned because Gmail kept overriding specific
+# elements (the board) back to dark anyway, so a maintained dark variant
+# wasn't buying anything. Not worth the upkeep; this is light-only by design.
+#
+# NOTE: no CSS custom properties (var()) here — Gmail's mobile apps don't
+# support them at all, which silently drops every color/background/border
+# tied to a variable while structural CSS (flex, literal px, font-weight)
+# survives. Every color below is a literal value.
+#
+# NOTE: no position:absolute layout (bulb frame) and no writing-mode/rotated
+# text (ticket stub) — both rendered broken in real-world Gmail testing
+# (bulbs collapsed into a stray inline blob; rotated stub text forced its
+# flex sibling to an oversized height). Replaced with plain-flow rows and a
+# simple horizontal bottom bar, which survive Gmail's rendering.
+MARQUEE_CSS = """
+  * { box-sizing: border-box; }
+  body { margin:0; background:#d9c69a; font-family:Georgia,'Times New Roman',serif;
+         padding:24px 12px; }
+  .email { max-width:600px; margin:0 auto; background:#ecdcae;
+           box-shadow:0 16px 44px rgba(28,21,18,0.25); }
+  .proscenium { height:16px;
+                background:repeating-linear-gradient(100deg, #8f0016 0 9px, #c20120 9px 18px); }
+  .board-wrap { padding:30px 32px 8px; text-align:center;
+                background:radial-gradient(ellipse 70% 100% at 50% 0%, rgba(232,165,48,0.30), transparent 70%); }
+  .bulb-row { text-align:center; }
+  .bulb-row.top { margin-bottom:12px; }
+  .bulb-row.bottom { margin-top:12px; }
+  .fbulb { display:inline-block; width:6px; height:6px; margin:0 4px; border-radius:50%; background:#e8a530;
+           box-shadow:0 0 6px #e8a530, 0 0 2px #fff6dd inset; }
+  .board { position:relative; display:inline-block; background:#faf6ec;
+           background-image:repeating-linear-gradient(to bottom, transparent 0 13px, rgba(36,26,18,0.06) 13px 14px);
+           border:3px solid #241a12; border-radius:3px; padding:18px 22px 16px;
+           box-shadow:0 0 0 6px #e8a530; text-align:center; }
+  .board-row { font-family:Arial,Helvetica,sans-serif; font-weight:900; font-size:38px; line-height:1;
+               letter-spacing:-0.01em; color:#241a12; }
+  .subhead { font-family:Arial,Helvetica,sans-serif; font-size:11px; font-weight:700;
+             letter-spacing:0.08em; text-transform:uppercase; color:#8f0016;
+             text-align:center; white-space:nowrap; margin:10px 0 0; }
+  .subhead .star { color:#e8a530; margin:0 6px; }
+  .subhead b { color:#241a12; font-style:normal; }
+  .datestamp { text-align:center; font-size:12px; font-style:italic; color:#7c6c58; margin:10px 0 0; }
+  .content { padding:8px 32px 30px; }
+  .day-head { font-family:Arial,Helvetica,sans-serif; font-size:17px; font-weight:900;
+              letter-spacing:0.03em; text-transform:uppercase; color:#c20120;
+              text-shadow:1.5px 1.5px 0 rgba(0,0,0,0.25);
+              border-bottom:4px double #c20120; padding-bottom:7px; margin:34px 0 18px; }
+  /* Section title (one per email, e.g. "All Films Playing This Week") —
+     reads as a level above the .day-head headings used in the watchlist
+     sections above it. */
+  .section-head { font-family:Arial,Helvetica,sans-serif; font-size:13px; font-weight:900;
+                   letter-spacing:0.12em; text-transform:uppercase; color:#241a12;
+                   text-align:center; border-top:2px solid #e8a530; border-bottom:2px solid #e8a530;
+                   padding:8px 0; margin:40px 0 6px; }
+  .verify-note { font-size:12px; font-style:italic; color:#7c6c58; margin:16px 0 10px; }
+  .film-group { margin-bottom:8px; }
+  .film-header { margin:20px 0 8px; }
+  .film-title { color:#241a12; text-decoration:none; font-size:19px; font-weight:800; letter-spacing:0.01em; }
+  .film-title.uncertain { color:#6f5c42; font-weight:700; }
+  .film-year { font-family:Georgia,serif; color:#6f5c42; font-size:13px; margin-left:7px; }
+  .wl-note { display:block; font-family:'Courier New',Courier,monospace; font-size:11px;
+             color:#9c8a6c; margin-top:6px; }
+  .tag { display:inline-block; font-family:'Courier New',Courier,monospace; text-transform:uppercase;
+         letter-spacing:0.06em; font-size:9.5px; font-weight:700; color:#c20120;
+         border:1px solid #c20120; padding:2px 7px; border-radius:3px; margin-left:8px; vertical-align:middle; }
+  .tag.watched { color:#9c8a6c; border-color:#9c8a6c; }
+  .ticket { position:relative; background:#faf3df;
+            border:2px solid #241a12; border-radius:6px; box-shadow:0 6px 16px -4px rgba(28,21,18,0.25);
+            overflow:hidden; margin-bottom:10px; }
+  .ticket::before { content:""; position:absolute; top:0; left:0; right:0; height:5px; background:#c20120; }
+  .ticket.uncertain::before { background:#e8a530; opacity:0.75; }
+  .ticket.other::before { background:#e8a530; }
+  .ticket-frame { position:absolute; inset:9px 6px 6px; border:1px dashed #d8c48f;
+                  border-radius:4px; opacity:0.7; pointer-events:none; }
+  .ticket-main { padding:14px 18px 8px; }
+  .ticket-eyebrow { font-family:'Courier New',Courier,monospace; font-size:8px;
+                    font-weight:700; letter-spacing:0.12em; text-transform:uppercase; color:#e8a530; }
+  .ticket.uncertain .ticket-eyebrow { color:#9c8a6c; }
+  .ticket-stars { font-size:7px; letter-spacing:4px; color:#e8a530; opacity:0.5; margin-left:6px; }
+  .ticket.uncertain .ticket-stars { color:#9c8a6c; }
+  .venue-name { display:block; font-family:Georgia,serif; font-weight:700; font-size:13.5px; color:#241a12;
+                text-decoration:none; border-bottom:1px solid #9c8a6c; margin:6px 0 8px; }
+  .ticket.uncertain .venue-name, .ticket.other .venue-name { color:#6f5c42; }
+  .time { display:inline-block; font-family:'Courier New',Courier,monospace; font-weight:700; font-size:12px;
+          color:#8f0016; background:rgba(194,1,32,0.10); border:1px solid rgba(194,1,32,0.4);
+          border-radius:3px; padding:2px 7px; margin:0 5px 6px 0; }
+  .ticket.uncertain .time, .ticket.other .time { color:#6f5c42; background:transparent; border-color:#9c8a6c; }
+  .ticket-stub-bar { border-top:1px dashed #d8c48f; padding:5px 18px; text-align:right;
+                     font-family:'Courier New',Courier,monospace; font-size:9px; letter-spacing:0.06em;
+                     text-transform:uppercase; color:#9c8a6c; opacity:0.75; }
+  .no-matches { color:#7c6c58; margin:16px 0; }
+  .other-row { padding:6px 0; border-bottom:1px solid #d8c48f; }
+  .other-title { font-family:Georgia,serif; font-weight:700; font-size:13.5px; color:#241a12; text-decoration:none; }
+  .other-year { color:#7c6c58; font-size:11px; margin-left:5px; }
+  .other-watched { color:#9c8a6c; font-size:10px; font-style:italic; margin-left:6px; }
+  .other-venue { display:block; font-size:11.5px; color:#6f5c42; margin-top:2px; }
+  .other-venue a { color:#8f0016; text-decoration:none; }
+  .other-day { display:block; margin-top:1px; }
+  .divider { position:relative; height:1px; background:#d8c48f; margin:30px 0 20px; }
+  .divider::after { content:"\\25C6"; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+                     background:#ecdcae; color:#e8a530; padding:0 12px; font-size:10px; }
+  /* Plain solid-color elements, not a CSS gradient/clip-path shape — Gmail
+     doesn't reliably render either (confirmed: clip-path was ignored
+     entirely and the repeating-gradient rendered as two flat bars instead
+     of a repeating stripe). Individual elements with solid backgrounds
+     can't fail to render. */
+  .popcorn-wrap { text-align:center; margin:0 0 12px; }
+  .popcorn-stripe { display:inline-block; width:3px; height:22px; }
+  .popcorn-stripe.red { background:#c20120; }
+  .popcorn-stripe.white { background:#ffffff; border-left:1px solid #d8c48f; border-right:1px solid #d8c48f; }
+  .footer-stars { text-align:center; font-size:8px; letter-spacing:6px; color:#e8a530; opacity:0.5; margin:0 0 10px; }
+  .footer { font-size:11px; color:#7c6c58; line-height:1.7; text-align:center; }
+  .footer a { color:#c20120; text-decoration:none; }
+  .footer-fineprint { font-family:'Courier New',Courier,monospace; font-size:9px; letter-spacing:0.04em;
+                       color:#9c8a6c; opacity:0.65; text-align:center; margin:10px 0 0; }
+"""
+
+
+def _render_ticket(f, variant, eyebrow, stub_label, tag_html=""):
+    """Render one film as a header plus one ticket per theatre (variant:
+    'confident' | 'uncertain' | 'other'). Splitting per-theatre keeps each
+    ticket short — a single ticket holding every theatre's showtimes for a
+    wide-release film stretched into an unrecognizable wall of pills."""
+    title_class = "film-title" if variant == "confident" else "film-title uncertain"
+    wl_note = (
+        f'<span class="wl-note">→ matched from watchlist: "{escape(f["wl_title"])}"</span>'
+        if variant == "uncertain" and f.get("wl_title") else ""
+    )
+    header = f"""
+    <div class="film-header {variant}">
+      <a href="{f['url']}" class="{title_class}">{escape(f['title'])}</a><span class="film-year">{escape(str(f['year']))}</span>{tag_html}
+      {wl_note}
+    </div>
+    """
+    tickets = "".join(
+        f"""
+        <div class="ticket {variant}">
+          <div class="ticket-frame" aria-hidden="true"></div>
+          <div class="ticket-main">
+            <span class="ticket-eyebrow">{eyebrow}</span><span class="ticket-stars">★ ★ ★</span>
+            <a href="{t['url']}" class="venue-name">{escape(t['name'])}</a>
+            {"".join(f'<span class="time">{tm}</span>' for tm in t['times'])}
+          </div>
+          <div class="ticket-stub-bar">{stub_label} · No. {abs(hash(f['title'] + t['name'])) % 10000:04d}</div>
+        </div>
+        """
+        for t in f["theatres"]
+    )
+    return f'<div class="film-group">{header}{tickets}</div>'
+
+
+def _group_other_by_film(other_by_date):
+    """Group the "all films playing" entries by film across all days —
+    unlike group_by_film (used by the watchlist sections, which only ever
+    sees one day at a time), this needs to keep each showtime's day label
+    so a multi-day listing doesn't lose track of which day a time belongs to.
+
+    Returns list of {title, year, url, watched,
+        theatres: [{name, url, days: [{label, times}]}]}
+    sorted alphabetically by title.
+    """
+    films = {}
+    for date_str in sorted(other_by_date):
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        day_label = d.strftime("%a")  # e.g. "Thu"
+        for e in other_by_date[date_str]:
+            f = films.setdefault(e["title"], {
+                "title": e["title"], "year": e["year"], "url": e["url"],
+                "watched": e.get("watched", False), "theatres": {},
+            })
+            t = f["theatres"].setdefault(e["theatre"], {"url": e["theatre_url"], "days": {}})
+            times = t["days"].setdefault(day_label, [])
+            if e["time"] not in times:
+                times.append(e["time"])
+
+    result = []
+    for f in films.values():
+        # dict preserves insertion order, and days were inserted in
+        # chronological order (outer loop above iterates sorted dates)
+        theatres = [
+            {
+                "name": name,
+                "url": info["url"],
+                "days": [
+                    {"label": label, "times": sorted(times, key=_time_sort_key)}
+                    for label, times in info["days"].items()
+                ],
+            }
+            for name, info in sorted(f["theatres"].items())
+        ]
+        result.append({**f, "theatres": theatres})
+    return sorted(result, key=lambda f: f["title"])
+
+
+def _render_other_row(f):
+    """Compact plain-list row for the low-priority "all films playing" section
+    — intentionally not ticket-styled: this is auxiliary info, not a watchlist
+    match, so it shouldn't compete visually, and keeping it lightweight helps
+    the whole email stay under Gmail's clipping size threshold."""
+    watched_html = '<span class="other-watched">(watched)</span>' if f.get("watched") else ""
+    venue_lines = "".join(
+        f"""<span class="other-venue">
+          <a href="{t['url']}">{escape(t['name'])}</a>
+          {"".join(f'<span class="other-day">{d["label"]}: {", ".join(d["times"])}</span>' for d in t['days'])}
+        </span>"""
+        for t in f["theatres"]
+    )
+    return f"""
+    <div class="other-row">
+      <a href="{f['url']}" class="other-title">{escape(f['title'])}</a><span class="other-year">{escape(str(f['year']))}</span>{watched_html}
+      {venue_lines}
+    </div>
+    """
+
+
 def build_email_html(entries_by_date, theatre_urls, other_by_date=None):
     """Build HTML email grouped by day.
 
@@ -469,49 +691,24 @@ def build_email_html(entries_by_date, theatre_urls, other_by_date=None):
         for day in entries_by_date.values()
     )
 
+    bulb_row = ('<span class="fbulb"></span>' * 9)
     html = f"""
-    <html><head><style>
-      body {{ font-family:Georgia,serif; max-width:600px; margin:0 auto;
-              background:#fff; color:#1a1a1a; padding:24px; }}
-      .hdr {{ font-size:16px; letter-spacing:0.1em; text-transform:uppercase;
-              color:#666; border-bottom:1px solid #ddd; padding-bottom:8px; }}
-      .hdr-date {{ font-size:12px; font-weight:normal; }}
-      .no-matches {{ color:#666; margin-top:16px; }}
-      .day-head {{ font-size:14px; text-transform:uppercase; letter-spacing:0.08em;
-                   color:#c97c3a; margin-top:28px; margin-bottom:10px;
-                   border-bottom:1px solid #f0e0d0; padding-bottom:6px; }}
-      .day-head-other {{ font-size:13px; text-transform:uppercase; letter-spacing:0.08em;
-                         color:#999; margin-top:20px; margin-bottom:8px;
-                         border-bottom:1px solid #eee; padding-bottom:4px; }}
-      .verify-note {{ font-size:11px; color:#999; margin:10px 0 4px; }}
-      .card {{ padding:8px 12px; margin-bottom:8px; }}
-      .card-confident {{ border-left:3px solid #c97c3a; background:#fdf8f3; }}
-      .card-uncertain {{ border-left:3px solid #ddd; background:#f9f9f9; padding:6px 12px; margin-bottom:6px; }}
-      .card-other {{ border-left:3px solid #ddd; background:#fafafa; padding:7px 12px; margin-bottom:6px; }}
-      .title-confident {{ color:#1a1a1a; text-decoration:none; }}
-      .title-uncertain {{ color:#777; text-decoration:none; }}
-      .title-other {{ color:#555; text-decoration:none; font-size:14px; }}
-      .year-confident {{ color:#888; font-size:12px; margin-left:6px; }}
-      .year-uncertain {{ color:#bbb; font-size:11px; margin-left:4px; }}
-      .year-other {{ color:#bbb; font-size:12px; margin-left:6px; }}
-      .venue-confident {{ display:block; font-size:12px; color:#555; margin-top:3px; }}
-      .venue-uncertain {{ display:block; font-size:11px; color:#999; margin-top:3px; }}
-      .venue-other {{ display:block; font-size:12px; color:#999; margin-top:3px; }}
-      .venue-link-confident {{ color:#c97c3a; text-decoration:none; }}
-      .venue-link-uncertain {{ color:#bbb; text-decoration:none; }}
-      .venue-link-other {{ color:#aaa; text-decoration:none; }}
-      .tag {{ display:inline-block; letter-spacing:0.05em; text-transform:uppercase;
-              color:#fff; border-radius:3px; vertical-align:middle; }}
-      .tag-rewatch {{ font-size:10px; background:#c97c3a; padding:1px 6px; margin-left:8px; }}
-      .tag-rewatch-uncertain {{ font-size:9px; background:#bbb; padding:1px 5px; margin-left:6px; }}
-      .tag-watched {{ font-size:10px; background:#9c8455; padding:1px 6px; margin-left:8px; }}
-      .footer {{ font-size:11px; color:#aaa; margin-top:32px; border-top:1px solid #eee; padding-top:12px; }}
-      .footer a {{ color:#aaa; }}
-    </style></head><body>
-    <h2 class="hdr">
-      {LOCATION} — Watchlist Digest<br>
-      <span class="hdr-date">{today_str}</span>
-    </h2>
+    <html><head>
+    <meta name="color-scheme" content="light">
+    <meta name="supported-color-schemes" content="light">
+    <style>{MARQUEE_CSS}</style></head><body>
+    <div class="email">
+      <div class="proscenium"></div>
+      <div class="board-wrap">
+        <div class="bulb-row top" aria-hidden="true">{bulb_row}</div>
+        <div class="board">
+          <div class="board-row">MARQUEE</div>
+          <p class="subhead"><span class="star">★</span>{escape(LOCATION)} <b>Watchlist Digest</b><span class="star">★</span></p>
+        </div>
+        <div class="bulb-row bottom" aria-hidden="true">{bulb_row}</div>
+        <p class="datestamp">{today_str}</p>
+      </div>
+      <div class="content">
     """
 
     if not has_any:
@@ -530,86 +727,41 @@ def build_email_html(entries_by_date, theatre_urls, other_by_date=None):
 
             if day["confident"]:
                 for f in group_by_film(day["confident"]):
-                    venue_lines = "".join(
-                        f"""<span class="venue-confident">
-                          <a href="{t['url']}" class="venue-link-confident">{t['name']}</a>
-                          &nbsp;·&nbsp; {"&ensp;".join(t['times'])}
-                        </span>"""
-                        for t in f["theatres"]
-                    )
-                    rewatch_tag = (
-                        '<span class="tag tag-rewatch">Rewatch</span>'
-                        if f.get("watched") else ""
-                    )
-                    html += f"""
-                    <div class="card card-confident">
-                      <strong><a href="{f['url']}" class="title-confident">{f['title']}</a></strong>
-                      <span class="year-confident">{f['year']}</span>{rewatch_tag}
-                      {venue_lines}
-                    </div>
-                    """
+                    tag_html = '<span class="tag">Rewatch</span>' if f.get("watched") else ""
+                    html += _render_ticket(f, "confident", "Now Showing", "Admit One", tag_html)
 
             if day["uncertain"]:
-                html += '<p class="verify-note">Possible matches (verify):</p>'
+                html += '<p class="verify-note">Possible matches — verify before going:</p>'
                 for f in group_by_film(day["uncertain"]):
-                    venue_lines = "".join(
-                        f"""<span class="venue-uncertain">
-                          <a href="{t['url']}" class="venue-link-uncertain">{t['name']}</a>
-                          &nbsp;·&nbsp; {"&ensp;".join(t['times'])}
-                        </span>"""
-                        for t in f["theatres"]
-                    )
-                    rewatch_tag = (
-                        '<span class="tag tag-rewatch-uncertain">Rewatch</span>'
-                        if f.get("watched") else ""
-                    )
-                    html += f"""
-                    <div class="card card-uncertain">
-                      <a href="{f['url']}" class="title-uncertain">{f['title']}</a>
-                      <span class="year-uncertain">{f['year']}</span>
-                      → <em>{f['wl_title']}</em>{rewatch_tag}
-                      {venue_lines}
-                    </div>
-                    """
+                    tag_html = '<span class="tag">Rewatch</span>' if f.get("watched") else ""
+                    html += _render_ticket(f, "uncertain", "Possible Match", "Verify", tag_html)
 
     if other_by_date:
-        html += '<h2 class="hdr" style="color:#888;margin-top:40px;border-top:2px solid #eee;padding-top:20px;">All Films Playing This Week</h2>'
-        for date_str in sorted(other_by_date):
-            entries = other_by_date[date_str]
-            if not entries:
-                continue
-            d = datetime.strptime(date_str, "%Y-%m-%d")
-            day_label = d.strftime("%A, %B %-d") if sys.platform != "win32" else d.strftime("%A, %B {d}").replace("{d}", str(d.day))
-            html += f'<h3 class="day-head-other">{day_label}</h3>'
-            for f in group_by_film(entries):
-                venue_lines = "".join(
-                    f"""<span class="venue-other">
-                      <a href="{t['url']}" class="venue-link-other">{t['name']}</a>
-                      &nbsp;·&nbsp; {"&ensp;".join(t['times'])}
-                    </span>"""
-                    for t in f["theatres"]
-                )
-                watched_tag = (
-                    '<span class="tag tag-watched">Watched</span>'
-                    if f.get("watched") else ""
-                )
-                html += f"""
-                <div class="card card-other">
-                  <a href="{f['url']}" class="title-other">{f['title']}</a>
-                  <span class="year-other">{f['year']}</span>{watched_tag}
-                  {venue_lines}
-                </div>
-                """
+        # Grouped by movie, not by day (unlike the watchlist sections above) —
+        # this section is just "what's playing," so each film appears once
+        # with every theatre/day/time underneath, rather than being repeated
+        # under a separate heading for each day.
+        grouped_other = _group_other_by_film(other_by_date)
+        if grouped_other:
+            html += '<h2 class="section-head">All Films Playing This Week</h2>'
+            for f in grouped_other:
+                html += _render_other_row(f)
 
     theatre_list = " · ".join(
-        f'<a href="{url}">{name}</a>'
+        f'<a href="{url}">{escape(name)}</a>'
         for name, url in theatre_urls.items()
     )
     html += f"""
-    <p class="footer">
-      Theatres checked: {theatre_list}<br>
-      Showtimes via CinemaClock. Verify at venue before going.
-    </p>
+        <div class="divider"></div>
+        <div class="popcorn-wrap" aria-hidden="true"><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span></div>
+        <p class="footer-stars">★ ★ ★</p>
+        <p class="footer">
+          Theatres checked: {theatre_list}<br>
+          Showtimes via CinemaClock. Verify at venue before going.
+        </p>
+        <p class="footer-fineprint">One digest per household · No refunds, exchanges, or regrets · Void where showtimes have changed</p>
+      </div>
+    </div>
     </body></html>
     """
     return html
@@ -761,10 +913,11 @@ def main():
                     print(f"        {t['name']}: {', '.join(t['times'])}")
 
     # Build and send email
+    span = f"next {LOOKAHEAD_DAYS} days" if LOOKAHEAD_DAYS != 1 else "next day"
     subject = (
-        f"🎬 {total_matches} watchlist film(s) playing this week — {LOCATION} theatres"
+        f"🎬 Marquee: {total_matches} watchlist film(s) playing the {span} — {LOCATION}"
         if total_matches
-        else f"{LOCATION} theatres — no watchlist matches this week"
+        else f"🎬 Marquee: no watchlist matches the {span} — {LOCATION}"
     )
     html = build_email_html(dict(entries_by_date), THEATRES, dict(other_by_date))
     send_email(subject, html)
@@ -773,22 +926,28 @@ def main():
 
 
 def register_scheduled_task():
-    """Register/update Windows Task Scheduler entry for the weekly watchlist digest."""
+    """Register/update Windows Task Scheduler entry for the watchlist digest.
+
+    Runs on a fixed day interval (schedule_interval_days) rather than a
+    fixed weekday, so the run cadence can be kept in step with
+    lookahead_days — e.g. a 3-day lookahead paired with a 3-day interval
+    means every showtime gets covered by some run, without long gaps.
+    """
     import subprocess
     script    = os.path.abspath(__file__)
     python    = sys.executable
-    day       = _cfg["watchlist"].get("schedule_day", "sunday").upper()[:3]  # e.g. "SUN"
+    interval  = int(_cfg["watchlist"].get("schedule_interval_days", 3))
     time_     = _cfg["watchlist"].get("schedule_time", "20:00")
     task_name = "WatchlistChecker"
     cmd = (
         f'schtasks /create /f '
         f'/tn "{task_name}" '
         f'/tr "\\"{python}\\" \\"{script}\\"" '
-        f'/sc weekly /d {day} /st {time_}'
+        f'/sc daily /mo {interval} /st {time_}'
     )
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if result.returncode == 0:
-        print(f'✓ Task "{task_name}" registered — runs every {day} at {time_}')
+        print(f'✓ Task "{task_name}" registered — runs every {interval} day(s) at {time_}')
     else:
         print(f'✗ schtasks failed:\n{result.stderr.strip()}')
         print("  You may need to run this from an elevated (admin) prompt.")

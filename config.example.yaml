@@ -27,9 +27,9 @@ matching:
   recommendation_score: 0.75  # Minimum score to link a Claude recommendation to a current showing
 
 watchlist:
-  lookahead_days: 8        # How many days ahead to check for showtimes
-  schedule_day: sunday     # Day of week for digest email (monday–sunday)
-  schedule_time: "20:00"   # 24h time — run python watchlist_checker.py --schedule to register
+  lookahead_days: 3            # How many days ahead to check for showtimes
+  schedule_interval_days: 3    # Run the digest every N days — keep in step with lookahead_days
+  schedule_time: "20:00"       # 24h time — run python watchlist_checker.py --schedule to register
 
 recommendations:
   min: 2                   # Minimum films per recommendation batch

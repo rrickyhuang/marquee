@@ -3,9 +3,9 @@
 **Your Letterboxd watchlist, matched against what's actually screening near you — delivered to your inbox.**
 
 Marquee scrapes local theatre showtimes, matches them against your Letterboxd
-watchlist, and emails you a weekly digest of the films you want to see that are
-playing this week. A companion script asks Claude for monthly recommendations from
-what's currently screening, based on your taste profile.
+watchlist, and emails you a digest of the films you want to see that are playing
+soon. A companion script asks Claude for monthly recommendations from what's
+currently screening, based on your taste profile.
 
 It's built for repertory- and arthouse-heavy cities: if your theatres are listed on
 [CinemaClock](https://www.cinemaclock.com), Marquee can watch them for you.
@@ -14,10 +14,10 @@ It's built for repertory- and arthouse-heavy cities: if your theatres are listed
 
 ## What you get
 
-- **Weekly watchlist digest** (`watchlist_checker.py`) — an email grouped by day → film
-  → cinema → showtimes, covering the next several days. Confident matches are
-  highlighted; uncertain fuzzy matches are flagged separately to verify. Films you've
-  already watched are tagged as rewatches.
+- **Watchlist digest** (`watchlist_checker.py`) — an email grouped by day → film
+  → cinema → showtimes, covering the next few days (`watchlist.lookahead_days`).
+  Confident matches are highlighted; uncertain fuzzy matches are flagged separately
+  to verify. Films you've already watched are tagged as rewatches.
 - **Monthly recommendations** (`recommendations.py`) — excludes everything you've
   already watched or watchlisted, then asks Claude to pick films currently playing that
   fit your taste, with a one-line reason for each.
@@ -58,7 +58,7 @@ gets committed.
 
 Run either script manually (works on any OS):
 ```
-python watchlist_checker.py     # weekly watchlist digest
+python watchlist_checker.py     # watchlist digest
 python recommendations.py       # monthly AI recommendations
 ```
 
@@ -69,15 +69,21 @@ pytest
 
 ### Scheduling (Windows)
 
-On Windows, each script can register itself with Task Scheduler using the day/time from
-`config.yaml`:
+On Windows, each script can register itself with Task Scheduler using the
+interval/time from `config.yaml`:
 ```
-python watchlist_checker.py --schedule      # weekly
+python watchlist_checker.py --schedule      # every watchlist.schedule_interval_days
 python recommendations.py --schedule        # monthly
 ```
 
+The watchlist digest runs on a fixed day interval (`watchlist.schedule_interval_days`,
+default 3) rather than a fixed weekday, so it can be kept in step with
+`watchlist.lookahead_days` — matching intervals means every showtime gets covered by
+some run, without long gaps between digests.
+
 On macOS/Linux, `--schedule` isn't supported yet — use `cron` to run the scripts on your
-own schedule (e.g. `0 20 * * 0 python /path/to/watchlist_checker.py` for Sundays at 8pm).
+own schedule (e.g. `0 20 */3 * * python /path/to/watchlist_checker.py` for every 3 days
+at 8pm).
 
 ## How it works
 
@@ -104,7 +110,7 @@ own schedule (e.g. `0 20 * * 0 python /path/to/watchlist_checker.py` for Sundays
 
 | File | Purpose |
 |---|---|
-| `watchlist_checker.py` | Weekly watchlist-match digest |
+| `watchlist_checker.py` | Watchlist-match digest |
 | `recommendations.py` | Monthly AI recommendation digest |
 | `config.example.yaml` | Template for your `config.yaml` (gitignored) |
 | `.env.example` | Template for your secrets (`.env`, gitignored) |

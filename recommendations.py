@@ -30,6 +30,7 @@ from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 
 import yaml
 
@@ -367,27 +368,162 @@ def _time_sort_key(t):
     return (h, mn)
 
 
+# ── EMAIL STYLE — "Marquee" ticket/marquee visual identity ────────────────────
+# Kept in sync with watchlist_checker.py's MARQUEE_CSS by hand — no shared
+# common.py yet (see project TODO), so this is intentionally duplicated.
+#
+# Light mode only. Gmail's mobile app runs its own automatic dark-mode
+# re-coloring pass over emails regardless of the <meta color-scheme> hint or
+# an explicit @media (prefers-color-scheme: dark) block — an intentional dark
+# palette was tried and abandoned because Gmail kept overriding specific
+# elements (the board) back to dark anyway, so a maintained dark variant
+# wasn't buying anything. Not worth the upkeep; this is light-only by design.
+#
+# NOTE: no CSS custom properties (var()) here — Gmail's mobile apps don't
+# support them at all, which silently drops every color/background/border
+# tied to a variable while structural CSS (flex, literal px, font-weight)
+# survives. Every color below is a literal value.
+#
+# NOTE: no position:absolute layout (bulb frame) and no writing-mode/rotated
+# text (ticket stub) — both rendered broken in real-world Gmail testing
+# (bulbs collapsed into a stray inline blob; rotated stub text forced its
+# flex sibling to an oversized height). Replaced with plain-flow rows and a
+# simple horizontal bottom bar, which survive Gmail's rendering.
+MARQUEE_CSS = """
+  * { box-sizing: border-box; }
+  body { margin:0; background:#d9c69a; font-family:Georgia,'Times New Roman',serif;
+         padding:24px 12px; }
+  .email { max-width:600px; margin:0 auto; background:#ecdcae;
+           box-shadow:0 16px 44px rgba(28,21,18,0.25); }
+  .proscenium { height:16px;
+                background:repeating-linear-gradient(100deg, #8f0016 0 9px, #c20120 9px 18px); }
+  .board-wrap { padding:30px 32px 8px; text-align:center;
+                background:radial-gradient(ellipse 70% 100% at 50% 0%, rgba(232,165,48,0.30), transparent 70%); }
+  .bulb-row { text-align:center; }
+  .bulb-row.top { margin-bottom:12px; }
+  .bulb-row.bottom { margin-top:12px; }
+  .fbulb { display:inline-block; width:6px; height:6px; margin:0 4px; border-radius:50%; background:#e8a530;
+           box-shadow:0 0 6px #e8a530, 0 0 2px #fff6dd inset; }
+  .board { position:relative; display:inline-block; background:#faf6ec;
+           background-image:repeating-linear-gradient(to bottom, transparent 0 13px, rgba(36,26,18,0.06) 13px 14px);
+           border:3px solid #241a12; border-radius:3px; padding:18px 22px 16px;
+           box-shadow:0 0 0 6px #e8a530; text-align:center; }
+  .board-row { font-family:Arial,Helvetica,sans-serif; font-weight:900; font-size:38px; line-height:1;
+               letter-spacing:-0.01em; color:#241a12; }
+  .subhead { font-family:Arial,Helvetica,sans-serif; font-size:11px; font-weight:700;
+             letter-spacing:0.08em; text-transform:uppercase; color:#8f0016;
+             text-align:center; white-space:nowrap; margin:10px 0 0; }
+  .subhead .star { color:#e8a530; margin:0 6px; }
+  .subhead b { color:#241a12; font-style:normal; }
+  .datestamp { text-align:center; font-size:12px; font-style:italic; color:#7c6c58; margin:10px 0 0; }
+  .intro { font-size:12px; color:#7c6c58; text-align:center; margin:14px 0 4px; line-height:1.6; }
+  .content { padding:8px 32px 30px; }
+  .day-head { font-family:Arial,Helvetica,sans-serif; font-size:17px; font-weight:900;
+              letter-spacing:0.03em; text-transform:uppercase; color:#c20120;
+              text-shadow:1.5px 1.5px 0 rgba(0,0,0,0.25);
+              border-bottom:4px double #c20120; padding-bottom:7px; margin:34px 0 18px; }
+  .film-group { margin-bottom:8px; }
+  .film-header { margin:20px 0 8px; }
+  .film-title { color:#241a12; text-decoration:none; font-size:19px; font-weight:800; letter-spacing:0.01em; }
+  .film-year { font-family:Georgia,serif; color:#6f5c42; font-size:13px; margin-left:7px; }
+  .reason { display:block; font-size:12.5px; font-style:italic; color:#6f5c42; margin-top:6px; }
+  .ticket { position:relative; background:#faf3df;
+            border:2px solid #241a12; border-radius:6px; box-shadow:0 6px 16px -4px rgba(28,21,18,0.25);
+            overflow:hidden; margin-bottom:10px; }
+  .ticket::before { content:""; position:absolute; top:0; left:0; right:0; height:5px; background:#c20120; }
+  .ticket-frame { position:absolute; inset:9px 6px 6px; border:1px dashed #d8c48f;
+                  border-radius:4px; opacity:0.7; pointer-events:none; }
+  .ticket-main { padding:14px 18px 8px; }
+  .ticket-eyebrow { font-family:'Courier New',Courier,monospace; font-size:8px;
+                    font-weight:700; letter-spacing:0.12em; text-transform:uppercase; color:#e8a530; }
+  .ticket-stars { font-size:7px; letter-spacing:4px; color:#e8a530; opacity:0.5; margin-left:6px; }
+  .venue-name { display:block; font-family:Georgia,serif; font-weight:700; font-size:13.5px; color:#241a12;
+                text-decoration:none; border-bottom:1px solid #9c8a6c; margin:6px 0 8px; }
+  .time { display:inline-block; font-family:'Courier New',Courier,monospace; font-weight:700; font-size:12px;
+          color:#8f0016; background:rgba(194,1,32,0.10); border:1px solid rgba(194,1,32,0.4);
+          border-radius:3px; padding:2px 7px; margin:0 5px 6px 0; }
+  .ticket-stub-bar { border-top:1px dashed #d8c48f; padding:5px 18px; text-align:right;
+                     font-family:'Courier New',Courier,monospace; font-size:9px; letter-spacing:0.06em;
+                     text-transform:uppercase; color:#9c8a6c; opacity:0.75; }
+  .no-matches { color:#7c6c58; margin:16px 0; }
+  .divider { position:relative; height:1px; background:#d8c48f; margin:30px 0 20px; }
+  .divider::after { content:"\\25C6"; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+                     background:#ecdcae; color:#e8a530; padding:0 12px; font-size:10px; }
+  /* Plain solid-color elements, not a CSS gradient/clip-path shape — Gmail
+     doesn't reliably render either (confirmed: clip-path was ignored
+     entirely and the repeating-gradient rendered as two flat bars instead
+     of a repeating stripe). Individual elements with solid backgrounds
+     can't fail to render. */
+  .popcorn-wrap { text-align:center; margin:0 0 12px; }
+  .popcorn-stripe { display:inline-block; width:3px; height:22px; }
+  .popcorn-stripe.red { background:#c20120; }
+  .popcorn-stripe.white { background:#ffffff; border-left:1px solid #d8c48f; border-right:1px solid #d8c48f; }
+  .footer-stars { text-align:center; font-size:8px; letter-spacing:6px; color:#e8a530; opacity:0.5; margin:0 0 10px; }
+  .footer { font-size:11px; color:#7c6c58; line-height:1.7; text-align:center; }
+  .footer a { color:#c20120; text-decoration:none; }
+  .footer-fineprint { font-family:'Courier New',Courier,monospace; font-size:9px; letter-spacing:0.04em;
+                       color:#9c8a6c; opacity:0.65; text-align:center; margin:10px 0 0; }
+"""
+
+
+def _render_reco_ticket(f):
+    """Render one Claude-recommended film: a header, then one ticket per
+    theatre (splitting per-theatre keeps each ticket short and legible)."""
+    header = f"""
+    <div class="film-group">
+      <div class="film-header">
+        <a href="{f['url']}" class="film-title">{escape(f['title'])}</a><span class="film-year">{escape(str(f['year']))}</span>
+        <span class="reason">{escape(f['reason'])}</span>
+      </div>
+    """
+    tickets = "".join(
+        f"""
+        <div class="ticket">
+          <div class="ticket-frame" aria-hidden="true"></div>
+          <div class="ticket-main">
+            <span class="ticket-eyebrow">Now Showing</span><span class="ticket-stars">★ ★ ★</span>
+            <a href="{t['url']}" class="venue-name">{escape(t['name'])}</a>
+            {"".join(f'<span class="time">{tm}</span>' for tm in t['times'])}
+          </div>
+          <div class="ticket-stub-bar">Admit One · No. {abs(hash(f['title'] + t['name'])) % 10000:04d}</div>
+        </div>
+        """
+        for t in f["theatres"]
+    )
+    return f"{header}{tickets}</div>"
+
+
 def build_reco_email(recs_by_date):
     """HTML email — recommendations grouped by day, then cinema."""
     today_str = datetime.now().strftime("%B %d, %Y")
     has_any = any(bool(v) for v in recs_by_date.values())
 
+    bulb_row = ('<span class="fbulb"></span>' * 9)
     html = f"""
-    <html><body style="font-family:Georgia,serif;max-width:600px;margin:0 auto;
-                       background:#fff;color:#1a1a1a;padding:24px;">
-    <h2 style="font-size:16px;letter-spacing:0.1em;text-transform:uppercase;
-               color:#666;border-bottom:1px solid #ddd;padding-bottom:8px;">
-      {LOCATION} — Claude's Picks<br>
-      <span style="font-size:12px;font-weight:normal;">{today_str}</span>
-    </h2>
-    <p style="font-size:12px;color:#888;margin-top:4px;margin-bottom:24px;">
-      Films currently playing that aren't on your watchlist or watched list,
-      selected by Claude based on your taste profile.
-    </p>
+    <html><head>
+    <meta name="color-scheme" content="light">
+    <meta name="supported-color-schemes" content="light">
+    <style>{MARQUEE_CSS}</style></head><body>
+    <div class="email">
+      <div class="proscenium"></div>
+      <div class="board-wrap">
+        <div class="bulb-row top" aria-hidden="true">{bulb_row}</div>
+        <div class="board">
+          <div class="board-row">MARQUEE</div>
+          <p class="subhead"><span class="star">★</span>{escape(LOCATION)} <b>Claude's Picks</b><span class="star">★</span></p>
+        </div>
+        <div class="bulb-row bottom" aria-hidden="true">{bulb_row}</div>
+        <p class="datestamp">{today_str}</p>
+      </div>
+      <p class="intro">
+        Films currently playing that aren't on your watchlist or watched list,
+        selected by Claude based on your taste profile.
+      </p>
+      <div class="content">
     """
 
     if not has_any:
-        html += "<p style='color:#666;'>No recommendations this month.</p>"
+        html += '<p class="no-matches">No recommendations this month.</p>'
     else:
         for date_str in sorted(recs_by_date):
             films = recs_by_date[date_str]
@@ -395,42 +531,26 @@ def build_reco_email(recs_by_date):
                 continue
             d = datetime.strptime(date_str, "%Y-%m-%d")
             day_label = d.strftime("%A, %B ") + str(d.day)
-            html += f"""
-            <h3 style="font-size:14px;text-transform:uppercase;letter-spacing:0.08em;
-                       color:#4a7fa5;margin-top:28px;margin-bottom:10px;
-                       border-bottom:1px solid #d0e4f0;padding-bottom:6px;">
-              {day_label}
-            </h3>
-            """
+            html += f'<h3 class="day-head">{day_label}</h3>'
             for f in films:
-                venue_lines = "".join(
-                    f"""<span style="display:block;font-size:12px;color:#555;margin-top:3px;">
-                      <a href="{t['url']}" style="color:#4a7fa5;text-decoration:none;">{t['name']}</a>
-                      &nbsp;·&nbsp; {"&ensp;".join(t['times'])}
-                    </span>"""
-                    for t in f["theatres"]
-                )
-                html += f"""
-                <div style="border-left:3px solid #4a7fa5;padding:8px 12px;
-                            margin-bottom:10px;background:#f5f9fd;">
-                  <strong><a href="{f['url']}" style="color:#1a1a1a;text-decoration:none;">{f['title']}</a></strong>
-                  <span style="color:#888;font-size:12px;margin-left:6px;">{f['year']}</span>
-                  <span style="display:block;font-size:12px;color:#4a7fa5;
-                               margin-top:4px;font-style:italic;">{f['reason']}</span>
-                  {venue_lines}
-                </div>
-                """
+                html += _render_reco_ticket(f)
 
     theatre_list = " · ".join(
-        f'<a href="{url}" style="color:#aaa;">{name}</a>'
+        f'<a href="{url}">{escape(name)}</a>'
         for name, url in THEATRE_HOMEPAGES.items()
     )
     html += f"""
-    <p style="font-size:11px;color:#aaa;margin-top:32px;border-top:1px solid #eee;padding-top:12px;">
-      Theatres checked: {theatre_list}<br>
-      Recommendations by Claude ({datetime.now().strftime("%B %Y")}).
-      Showtimes via CinemaClock. Verify at venue before going.
-    </p>
+        <div class="divider"></div>
+        <div class="popcorn-wrap" aria-hidden="true"><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span></div>
+        <p class="footer-stars">★ ★ ★</p>
+        <p class="footer">
+          Theatres checked: {theatre_list}<br>
+          Recommendations by Claude ({datetime.now().strftime("%B %Y")}).
+          Showtimes via CinemaClock. Verify at venue before going.
+        </p>
+        <p class="footer-fineprint">One digest per household · No refunds, exchanges, or regrets · Void where showtimes have changed</p>
+      </div>
+    </div>
     </body></html>
     """
     return html

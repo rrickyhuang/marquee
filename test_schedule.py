@@ -7,26 +7,26 @@ import recommendations
 
 # ── watchlist_checker ─────────────────────────────────────────────────────────
 
-def test_watchlist_sunday_default():
+def test_watchlist_interval_default():
     fake_run = MagicMock(returncode=0, stderr="")
-    cfg = {"watchlist": {"schedule_day": "sunday", "schedule_time": "20:00"}}
+    cfg = {"watchlist": {"schedule_interval_days": 3, "schedule_time": "20:00"}}
     with patch.dict(watchlist_checker.__dict__, {"_cfg": cfg}):
         with patch("subprocess.run", return_value=fake_run) as mock_run:
             watchlist_checker.register_scheduled_task()
             cmd = mock_run.call_args[0][0]
-            assert "/sc weekly" in cmd
-            assert "/d SUN" in cmd
+            assert "/sc daily" in cmd
+            assert "/mo 3" in cmd
             assert "/st 20:00" in cmd
 
 
-def test_watchlist_wednesday_custom_time():
+def test_watchlist_custom_interval_and_time():
     fake_run = MagicMock(returncode=0, stderr="")
-    cfg = {"watchlist": {"schedule_day": "wednesday", "schedule_time": "18:30"}}
+    cfg = {"watchlist": {"schedule_interval_days": 5, "schedule_time": "18:30"}}
     with patch.dict(watchlist_checker.__dict__, {"_cfg": cfg}):
         with patch("subprocess.run", return_value=fake_run) as mock_run:
             watchlist_checker.register_scheduled_task()
             cmd = mock_run.call_args[0][0]
-            assert "/d WED" in cmd
+            assert "/mo 5" in cmd
             assert "/st 18:30" in cmd
 
 
@@ -37,7 +37,7 @@ def test_watchlist_defaults_when_keys_missing():
         with patch("subprocess.run", return_value=fake_run) as mock_run:
             watchlist_checker.register_scheduled_task()
             cmd = mock_run.call_args[0][0]
-            assert "/d SUN" in cmd
+            assert "/mo 3" in cmd
             assert "/st 20:00" in cmd
 
 

@@ -16,8 +16,8 @@ MINIMAL_CFG = {
         "recommendation_score": 0.75,
     },
     "watchlist": {
-        "lookahead_days": 8,
-        "schedule_day": "sunday",
+        "lookahead_days": 3,
+        "schedule_interval_days": 3,
         "schedule_time": "20:00",
     },
     "recommendations": {
