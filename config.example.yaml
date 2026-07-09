@@ -1,0 +1,56 @@
+# Marquee — User Configuration
+# Copy this file to config.yaml and fill in your own values.
+# Secrets (GMAIL_APP_PASSWORD, ANTHROPIC_API_KEY) stay in .env — do not put them here.
+
+letterboxd:
+  username: your_letterboxd_username   # your Letterboxd handle (no @)
+
+email:
+  from: your_email@gmail.com           # Gmail address used to send
+  to: your_email@gmail.com             # Address to receive the digest (can be the same)
+
+location: Your City, Region            # Used in email subjects and taste profile context
+
+# Theatres to scrape from CinemaClock.
+# Find your theatre's CinemaClock URL at https://www.cinemaclock.com
+theatres:
+  - name: Example Cinema
+    cinemaclock_url: https://www.cinemaclock.com/movie-theaters/example-cinema
+    homepage: https://www.examplecinema.com
+  # Add more theatres as needed
+
+# Fuzzy-matching thresholds (0.0–1.0). Defaults are recommended.
+matching:
+  threshold: 0.82          # Minimum score for a confident watchlist match
+  uncertain_floor: 0.70    # Minimum score to surface as an uncertain match
+  exclude_threshold: 0.82  # Minimum score to treat a film as already watched (recommendations.py)
+  recommendation_score: 0.75  # Minimum score to link a Claude recommendation to a current showing
+
+watchlist:
+  lookahead_days: 8        # How many days ahead to check for showtimes
+  schedule_day: sunday     # Day of week for digest email (monday–sunday)
+  schedule_time: "20:00"   # 24h time — run python watchlist_checker.py --schedule to register
+
+recommendations:
+  min: 2                   # Minimum films per recommendation batch
+  max: 6                   # Maximum films per recommendation batch
+  model: claude-sonnet-4-6 # Claude model to use
+  max_tokens: 1024         # Max tokens for each Claude response
+  schedule_days: 1         # Day(s) of month for recommendations email — single day or list e.g. [1, 15]
+  schedule_time: "21:00"   # 24h time — run python recommendations.py --schedule to register
+
+# Your personal taste profile — used by recommendations.py to prompt Claude.
+taste_profile:
+  description: |
+    Write a few sentences describing your film taste here.
+    This is passed directly to Claude to personalize recommendations.
+    Example: Prefers slow cinema, arthouse, and character-driven drama.
+    Rates critically — average around 3.5 stars.
+  five_star_films:
+    - Film Title One
+    - Film Title Two
+    # Add all your 5-star films
+  liked_films:
+    - Film Title One
+    - Film Title Two
+    # Add your Letterboxd liked/hearted films

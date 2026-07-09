@@ -1,0 +1,29 @@
+# Ignore everything
+*
+
+# Allow project files
+!.gitignore
+!LICENSE
+!README.md
+!CLAUDE.md
+!watchlist_checker.py
+!recommendations.py
+!run_watchlist_checker.bat
+!requirements.txt
+!config.example.yaml
+!.env.example
+!conftest.py
+!test_schedule.py
+
+# Allow .claude config (but not local overrides)
+!.claude/
+!.claude/settings.json
+
+# Keep ignoring sensitive/generated files (config.yaml contains personal email)
+.env
+config.yaml
+*.zip
+*.csv
+__pycache__/
+*.pyc
+.claude/settings.local.json
