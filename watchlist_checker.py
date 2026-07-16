@@ -30,7 +30,6 @@ from difflib import SequenceMatcher
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html import escape
-from html.parser import HTMLParser
 
 import yaml
 
