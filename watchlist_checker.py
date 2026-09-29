@@ -183,6 +183,8 @@ def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100)
             if f"/watchlist/page/{page + 1}/" not in r.text:
                 break
             time.sleep(1)  # be polite
+        else:
+            raise RuntimeError(f"still more pages after {max_pages}")
     except Exception as e:
         print(f"  Live watchlist scrape failed ({e})")
         return None
