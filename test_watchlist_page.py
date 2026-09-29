@@ -21,3 +21,20 @@ def test_parse_watchlist_page_extracts_title_year_url():
 
 def test_parse_watchlist_page_empty():
     assert watchlist_checker._parse_watchlist_page("<html></html>") == []
+
+
+def test_years_compatible():
+    assert watchlist_checker.years_compatible("2026", "2025")   # within tolerance
+    assert not watchlist_checker.years_compatible("2026", "2002")
+    assert watchlist_checker.years_compatible("", "2002")       # unknown never conflicts
+    assert watchlist_checker.years_compatible("2026", None)
+
+
+def test_match_skips_year_conflicting_remake_and_unrelated_fuzzy():
+    film = lambda t, y: {"title": t, "year": y, "showtimes": [], "url": ""}
+    watchlist = [("Resident Evil", "2002", "u1"), ("Cruising", "1980", "u2"), ("Akira", "1988", "u3")]
+    matches, uncertain = watchlist_checker.match_against_watchlist(
+        [film("Resident Evil", "2026"), film("The Uprising", "2026"), film("Akira", "1988")], watchlist
+    )
+    assert [m["title"] for m in matches] == ["Akira"]
+    assert uncertain == []

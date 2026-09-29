@@ -21,8 +21,8 @@ theatres:
 
 # Fuzzy-matching thresholds (0.0–1.0). Defaults are recommended.
 matching:
-  threshold: 0.82          # Minimum score for a confident watchlist match
-  uncertain_floor: 0.70    # Minimum score to surface as an uncertain match
+  threshold: 0.90          # Minimum score for a confident watchlist match
+  uncertain_floor: 0.85    # Minimum score to surface as an uncertain match
   exclude_threshold: 0.82  # Minimum score to treat a film as already watched (recommendations.py)
   recommendation_score: 0.75  # Minimum score to link a Claude recommendation to a current showing
 

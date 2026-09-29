@@ -361,19 +361,25 @@ def scrape_cinemaclock(url):
             )
             if not title_m:
                 continue
-            movie_path, title = title_m.group(1), title_m.group(2).strip()
+            movie_path, title = title_m.group(1), unescape(title_m.group(2)).strip()
             if not title:
                 continue
             movie_url = f"https://www.cinemaclock.com{movie_path}"
 
-            # Year: first 4-digit year in the moviegenre paragraph
-            year_m = re.search(
-                r"class=['\"]moviegenre['\"][^>]*>(.*?)</p>", block, re.DOTALL
-            )
+            # Year: CinemaClock's film slug ends in it (/movies/forgotten-island-2026)
+            # for nearly every film; fall back to the first 4-digit year in the
+            # moviegenre paragraph. Stays blank for one-off events.
             year = ""
-            if year_m:
-                yr = re.search(r"\b((?:19|20)\d{2})\b", year_m.group(1))
-                year = yr.group(1) if yr else ""
+            slug_m = re.search(r"-((?:19|20)\d{2})$", movie_path)
+            if slug_m:
+                year = slug_m.group(1)
+            else:
+                year_m = re.search(
+                    r"class=['\"]moviegenre['\"][^>]*>(.*?)</p>", block, re.DOTALL
+                )
+                if year_m:
+                    yr = re.search(r"\b((?:19|20)\d{2})\b", year_m.group(1))
+                    year = yr.group(1) if yr else ""
 
             showtimes = extract_dated_showtimes(block, today)
             films.append({
@@ -403,8 +409,19 @@ def similarity(a, b):
     return SequenceMatcher(None, normalize(a), normalize(b)).ratio()
 
 
+def years_compatible(a, b, tolerance=1):
+    """False only when both years are known and differ by more than tolerance
+    (a same-titled remake or a different film). Unknown years never conflict;
+    the tolerance covers festival-vs-theatrical release-year differences."""
+    try:
+        return abs(int(a) - int(b)) <= tolerance
+    except (TypeError, ValueError):
+        return True
+
+
 def match_against_watchlist(scraped_films, watchlist):
-    """watchlist items are (title, year, lb_url) triples."""
+    """watchlist items are (title, year, lb_url) triples. Watchlist entries whose
+    year clearly conflicts with the showing's year are never candidates."""
     matches = []
     uncertain = []
     for film in scraped_films:
@@ -412,6 +429,8 @@ def match_against_watchlist(scraped_films, watchlist):
         best_wl = None
         for entry in watchlist:
             wl_title = entry[0]
+            if not years_compatible(film.get("year"), entry[1] if len(entry) > 1 else ""):
+                continue
             score = similarity(film["title"], wl_title)
             if score > best_score:
                 best_score = score
