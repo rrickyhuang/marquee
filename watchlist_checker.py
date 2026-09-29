@@ -419,26 +419,40 @@ def years_compatible(a, b, tolerance=1):
         return True
 
 
+YEAR_CONFLICT_MIN_SCORE = 0.95  # a year-conflicting candidate must be a near-exact title match
+
+
 def match_against_watchlist(scraped_films, watchlist):
-    """watchlist items are (title, year, lb_url) triples. Watchlist entries whose
-    year clearly conflicts with the showing's year are never candidates."""
+    """watchlist items are (title, year, lb_url) triples.
+
+    A candidate whose year conflicts with the showing's is usually a remake or
+    unrelated film, so it only survives as a near-exact title match and is then
+    never "confident" — only surfaced as a possible match. (CinemaClock's year is
+    the local release year and Letterboxd's is the first release, so a genuine
+    match can occasionally differ by more than a year; better flagged than lost.)
+    """
     matches = []
     uncertain = []
     for film in scraped_films:
-        best_score = 0
+        best_key = (0, True)  # (score, year_ok) — prefer higher score, then agreeing years
         best_wl = None
         for entry in watchlist:
-            wl_title = entry[0]
-            if not years_compatible(film.get("year"), entry[1] if len(entry) > 1 else ""):
+            year_ok = years_compatible(film.get("year"), entry[1] if len(entry) > 1 else "")
+            score = similarity(film["title"], entry[0])
+            if not year_ok and score < YEAR_CONFLICT_MIN_SCORE:
                 continue
-            score = similarity(film["title"], wl_title)
-            if score > best_score:
-                best_score = score
+            if (score, year_ok) > best_key:
+                best_key = (score, year_ok)
                 best_wl = entry
-        if best_score >= MATCH_THRESHOLD:
-            matches.append({**film, "wl_title": best_wl[0], "lb_url": best_wl[2] if len(best_wl) > 2 else "", "score": best_score})
+        best_score, year_ok = best_key
+        if best_wl is None:
+            continue
+        found = {**film, "wl_title": best_wl[0], "wl_year": best_wl[1] if len(best_wl) > 1 else "",
+                 "lb_url": best_wl[2] if len(best_wl) > 2 else "", "score": best_score}
+        if best_score >= MATCH_THRESHOLD and year_ok:
+            matches.append(found)
         elif best_score >= UNCERTAIN_FLOOR:
-            uncertain.append({**film, "wl_title": best_wl[0], "lb_url": best_wl[2] if len(best_wl) > 2 else "", "score": best_score})
+            uncertain.append(found)
     return matches, uncertain
 
 
@@ -471,6 +485,7 @@ def group_by_film(entries):
             "title": e["title"],
             "year": e["year"],
             "wl_title": e.get("wl_title", ""),
+            "wl_year": e.get("wl_year", ""),
             "url": e["url"],
             "watched": e.get("watched", False),
             "theatres": {},
@@ -618,8 +633,9 @@ def _render_ticket(f, variant, eyebrow, stub_label, tag_html=""):
     ticket short — a single ticket holding every theatre's showtimes for a
     wide-release film stretched into an unrecognizable wall of pills."""
     title_class = "film-title" if variant == "confident" else "film-title uncertain"
+    wl_year = f' ({escape(str(f["wl_year"]))})' if f.get("wl_year") else ""
     wl_note = (
-        f'<span class="wl-note">→ matched from watchlist: "{escape(f["wl_title"])}"</span>'
+        f'<span class="wl-note">→ matched from watchlist: "{escape(f["wl_title"])}"{wl_year}</span>'
         if variant == "uncertain" and f.get("wl_title") else ""
     )
     header = f"""
@@ -914,6 +930,7 @@ def main():
                         "title": m["title"],
                         "year": m["year"],
                         "wl_title": m["wl_title"],
+                        "wl_year": m.get("wl_year", ""),
                         "score": m["score"],
                         "theatre": theatre_name,
                         "theatre_url": THEATRE_HOMEPAGES.get(theatre_name, url),
@@ -935,6 +952,7 @@ def main():
                             "title": m["title"],
                             "year": m["year"],
                             "wl_title": m["wl_title"],
+                            "wl_year": m.get("wl_year", ""),
                             "score": m["score"],
                             "theatre": theatre_name,
                             "theatre_url": THEATRE_HOMEPAGES.get(theatre_name, url),

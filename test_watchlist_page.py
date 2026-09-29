@@ -30,11 +30,20 @@ def test_years_compatible():
     assert watchlist_checker.years_compatible("2026", None)
 
 
-def test_match_skips_year_conflicting_remake_and_unrelated_fuzzy():
+def test_match_downgrades_year_conflict_and_drops_unrelated_fuzzy():
     film = lambda t, y: {"title": t, "year": y, "showtimes": [], "url": ""}
     watchlist = [("Resident Evil", "2002", "u1"), ("Cruising", "1980", "u2"), ("Akira", "1988", "u3")]
     matches, uncertain = watchlist_checker.match_against_watchlist(
         [film("Resident Evil", "2026"), film("The Uprising", "2026"), film("Akira", "1988")], watchlist
     )
+    # exact title but conflicting years -> only a "possible" match, showing the watchlist year
     assert [m["title"] for m in matches] == ["Akira"]
-    assert uncertain == []
+    assert [(u["title"], u["wl_year"]) for u in uncertain] == [("Resident Evil", "2002")]
+
+
+def test_match_prefers_year_agreeing_candidate():
+    film = {"title": "Tony", "year": "2026", "showtimes": [], "url": ""}
+    matches, uncertain = watchlist_checker.match_against_watchlist(
+        [film], [("Tony", "1999", "old"), ("Tony", "2026", "new")]
+    )
+    assert [m["lb_url"] for m in matches] == ["new"] and uncertain == []
