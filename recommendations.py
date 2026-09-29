@@ -73,7 +73,6 @@ EXCLUDE_THRESHOLD    = _cfg["matching"]["exclude_threshold"]
 RECOMMENDATION_SCORE = _cfg["matching"]["recommendation_score"]
 LOCATION             = _cfg.get("location", "Local Theatres")
 
-LETTERBOXD_WATCHLIST_RSS = f"https://letterboxd.com/{_cfg['letterboxd']['username']}/watchlist/rss/"
 
 THEATRES, THEATRE_HOMEPAGES = {}, {}
 for _t in _cfg["theatres"]:
@@ -641,27 +640,15 @@ def main():
     watched_norms = fetch_watched_titles()
     print(f"  Watched (RSS):    {len(watched_norms)} titles")
     _, watchlist_entries = load_letterboxd_export()
-    # Patch with recently-added watchlist items not yet in the ZIP export
+    # Prefer the live watchlist page (current, reflects removals) over the ZIP
     try:
-        wl_xml = fetch_html(LETTERBOXD_WATCHLIST_RSS)
-        zip_wl_norms = {normalize(t) for t, _, _ in watchlist_entries}
-        rss_added = 0
-        for item_m in re.finditer(r"<item>(.*?)</item>", wl_xml, re.DOTALL):
-            title_m = re.search(
-                r"<title>(?:<!\[CDATA\[)?\s*(.*?)\s*(?:\]\]>)?</title>",
-                item_m.group(1), re.DOTALL,
-            )
-            if title_m:
-                raw = title_m.group(1).strip()
-                year_m = re.search(r"\s*\((\d{4})\)\s*$", raw)
-                title = raw[:year_m.start()].strip() if year_m else raw
-                if title and normalize(title) not in zip_wl_norms:
-                    watchlist_entries.append((title, year_m.group(1) if year_m else "", ""))
-                    rss_added += 1
-        if rss_added:
-            print(f"  Watchlist RSS:    +{rss_added} recent additions")
+        from watchlist_checker import fetch_watchlist_page
+        live = fetch_watchlist_page()
+        if live:
+            watchlist_entries = live
+            print(f"  Watchlist (live): {len(live)} titles")
     except Exception as e:
-        print(f"  Warning: could not fetch watchlist RSS ({e})")
+        print(f"  Warning: could not fetch live watchlist ({e}); using ZIP")
     watchlist_norms = {normalize(t) for t, _, _ in watchlist_entries}
     print(f"  Watchlist (total):{len(watchlist_norms)} titles")
     exclude_norms = watched_norms | watchlist_norms

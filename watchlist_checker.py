@@ -22,6 +22,7 @@ import os
 import re
 import smtplib
 import sys
+import time
 import urllib.request
 import zipfile
 from collections import defaultdict
@@ -29,7 +30,7 @@ from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from html import escape
+from html import escape, unescape
 from html.parser import HTMLParser
 
 import yaml
@@ -80,7 +81,7 @@ for _t in _cfg["theatres"]:
     THEATRES[_t["name"]] = _t["cinemaclock_url"]
     THEATRE_HOMEPAGES[_t["name"]] = _t["homepage"]
 
-LETTERBOXD_RSS          = f"https://letterboxd.com/{_cfg['letterboxd']['username']}/watchlist/rss/"
+STALE_ZIP_DAYS         = 14   # warn when falling back to an export ZIP older than this
 LETTERBOXD_ACTIVITY_RSS = f"https://letterboxd.com/{_cfg['letterboxd']['username']}/rss/"
 
 
@@ -127,76 +128,92 @@ def load_letterboxd_export():
     return watched_norms, watchlist_entries
 
 
-# ── RSS ────────────────────────────────────────────────────────────────────────
+# ── WATCHLIST ──────────────────────────────────────────────────────────────────
 
-def fetch_watchlist_rss(rss_url=LETTERBOXD_RSS):
-    """Build watchlist from the export ZIP, patched with the watchlist RSS.
+def _parse_watchlist_page(html):
+    """Extract (title, year, lb_url) tuples from one watchlist HTML page."""
+    entries = []
+    for tag in re.finditer(r'<[^>]*data-item-link="[^"]*"[^>]*>', html):
+        tag = tag.group(0)
+        link_m = re.search(r'data-item-link="([^"]*)"', tag)
+        name_m = re.search(r'data-item-full-display-name="([^"]*)"', tag)
+        if not link_m or not name_m:
+            continue
+        raw = unescape(name_m.group(1)).strip()
+        year_m = re.search(r"\s*\((\d{4})\)\s*$", raw)
+        title = raw[: year_m.start()].strip() if year_m else raw
+        year = year_m.group(1) if year_m else ""
+        if title:
+            entries.append((title, year, "https://letterboxd.com" + link_m.group(1)))
+    return entries
 
-    The ZIP is the primary source (complete history). The watchlist RSS patches
-    in any films added since the last export. Note: Letterboxd's watchlist RSS
-    is currently blocked by Cloudflare (403), so in practice the ZIP is the
-    sole source — drop a fresh export ZIP periodically to stay current.
+
+def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100):
+    """Scrape the live watchlist from letterboxd.com/<user>/watchlist/.
+
+    Letterboxd has no watchlist RSS (404), and plain urllib gets blocked by
+    Cloudflare, so this uses curl_cffi to present a real-browser TLS
+    fingerprint. Returns the complete list of (title, year, lb_url), or None if
+    anything goes wrong (missing dependency, blocked, no films found, a page
+    failing partway) so the caller can fall back to the export ZIP instead of
+    trusting a partial list.
     """
-    print(f"Loading watchlist...")
-    rss_items = []
     try:
-        xml = fetch_html(rss_url)
-        for item_m in re.finditer(r"<item>(.*?)</item>", xml, re.DOTALL):
-            item = item_m.group(1)
+        from curl_cffi import requests as cffi_requests
+    except ImportError:
+        print("  curl_cffi not installed — cannot scrape live watchlist")
+        return None
 
-            # <title><![CDATA[Film Title (YEAR)]]></title>
-            title_m = re.search(
-                r"<title>(?:<!\[CDATA\[)?\s*(.*?)\s*(?:\]\]>)?</title>", item, re.DOTALL
-            )
-            # <link> appears right after </title> in Letterboxd RSS
-            link_m = re.search(r"<link>\s*(https?://[^\s<]+)\s*</link>", item)
-            if not title_m:
-                continue
-
-            raw = title_m.group(1).strip()
-            lb_url = link_m.group(1).strip() if link_m else ""
-
-            # Strip trailing " (YEAR)" if present
-            year_m = re.search(r"\s*\((\d{4})\)\s*$", raw)
-            if year_m:
-                year = year_m.group(1)
-                title = raw[: year_m.start()].strip()
-            else:
-                year = ""
-                title = raw
-
-            if title:
-                rss_items.append((title, year, lb_url))
-
-        print(f"  {len(rss_items)} films from watchlist RSS")
+    entries, seen = [], set()
+    try:
+        for page in range(1, max_pages + 1):
+            url = f"https://letterboxd.com/{username}/watchlist/" + (f"page/{page}/" if page > 1 else "")
+            r = cffi_requests.get(url, impersonate="chrome", timeout=20)
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code} on page {page}")
+            page_entries = _parse_watchlist_page(r.text)
+            if not page_entries:
+                if page == 1:
+                    raise RuntimeError("no films found on page 1")
+                break
+            for e in page_entries:
+                if e[2] not in seen:
+                    seen.add(e[2])
+                    entries.append(e)
+            if f"/watchlist/page/{page + 1}/" not in r.text:
+                break
+            time.sleep(1)  # be polite
     except Exception as e:
-        print(f"  Watchlist RSS unavailable ({e}) — using ZIP only")
+        print(f"  Live watchlist scrape failed ({e})")
+        return None
+    return entries
+
+
+def load_watchlist():
+    """Return the watchlist as a list of (title, year, lb_url).
+
+    Primary source is the live watchlist page (always current, and reflects
+    removals). If that fails, falls back to the export ZIP, which is only as
+    fresh as the last time it was exported — a warning is printed if it's old.
+    """
+    print("Loading watchlist...")
+    live = fetch_watchlist_page()
+    if live:
+        print(f"  {len(live)} films from live watchlist page")
+        return live
 
     _, zip_entries = load_letterboxd_export()
-
-    if not rss_items and not zip_entries:
-        print("  Warning: no ZIP found and watchlist RSS unavailable — watchlist will be empty")
+    if not zip_entries:
+        print("  Warning: live scrape failed and no export ZIP found — watchlist will be empty")
         return []
 
-    if not rss_items:
-        print(f"  {len(zip_entries)} films from ZIP")
-        return zip_entries
-
-    if not zip_entries:
-        print(f"  No export ZIP found — using RSS only ({len(rss_items)} films)")
-        return rss_items
-
-    # Merge: ZIP as foundation (complete history), RSS patches in recent additions
-    zip_norms = {normalize(t) for t, _, _ in zip_entries}
-    merged = list(zip_entries)
-    added = 0
-    for title, year, lb_url in rss_items:
-        if normalize(title) not in zip_norms:
-            merged.append((title, year, lb_url))
-            added += 1
-
-    print(f"  Merged: {len(zip_entries)} ZIP + {added} RSS-only = {len(merged)} total")
-    return merged
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    newest = max(glob.glob(os.path.join(script_dir, "*.zip")), key=os.path.getmtime)
+    age_days = (time.time() - os.path.getmtime(newest)) // 86400
+    print(f"  {len(zip_entries)} films from ZIP (fallback)")
+    if age_days >= STALE_ZIP_DAYS:
+        print(f"  Warning: export ZIP is {int(age_days)} days old — watchlist may be out of date")
+    return zip_entries
 
 
 def load_watched_titles():
@@ -846,7 +863,7 @@ def main():
     watched_norms = load_watched_titles()
     print(f"  {len(watched_norms)} watched films (ZIP + activity RSS)")
 
-    watchlist = fetch_watchlist_rss()
+    watchlist = load_watchlist()
 
     for theatre_name, url in THEATRES.items():
         print(f"\nScraping: {theatre_name}...")

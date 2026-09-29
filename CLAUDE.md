@@ -31,9 +31,9 @@ homepage URL (for email links). Find CinemaClock URLs at https://www.cinemaclock
   exclude, recommendation score) and `watchlist.lookahead_days` for the lookahead window
 
 ## Data Sources
-- Watchlist: `watchlist_checker.py` tries the dedicated RSS first, falls back to the export ZIP
+- Watchlist: both scripts scrape the live watchlist page via `curl_cffi` (no watchlist RSS exists; plain urllib is Cloudflare-blocked); `watchlist_checker.py` falls back to the export ZIP if the scrape fails
 - Watched (`recommendations.py` only): always loads full history from export ZIP, then layers the live master RSS on top to catch recent watches not yet exported
-- Watchlist exclusion (`recommendations.py`): ZIP only — Letterboxd master RSS has no watchlist data
+- Watchlist exclusion (`recommendations.py`): live scrape, ZIP as fallback
 - Export ZIP: drop any `letterboxd-*.zip` into the project folder; scripts auto-select the most recently modified one. Gitignored.
 
 ## Email & Scheduling

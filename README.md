@@ -48,8 +48,8 @@ Both send styled HTML emails via Gmail and can register themselves as scheduled 
    - `ANTHROPIC_API_KEY` — required for `recommendations.py` only
 4. **Add your Letterboxd data:** export your data from Letterboxd (Settings → Data →
    Export your data) and drop the `letterboxd-*.zip` into the project folder. Both
-   scripts auto-select the most recently modified export. Refresh it periodically to
-   stay current.
+   scripts auto-select the most recently modified export. It supplies your watched
+   history and is the fallback if the live watchlist scrape fails.
 
 `config.yaml`, `.env`, and the export ZIP are all gitignored — your personal data never
 gets committed.
@@ -87,9 +87,11 @@ at 8pm).
 
 ## How it works
 
-- **Watchlist source:** `watchlist_checker.py` tries the dedicated Letterboxd watchlist
-  RSS feed first, falling back to the export ZIP. (Letterboxd's watchlist RSS is often
-  Cloudflare-blocked, so in practice the ZIP is the primary source — keep it fresh.)
+- **Watchlist source:** both scripts scrape your live watchlist page
+  (`letterboxd.com/<user>/watchlist/`) using `curl_cffi`, which presents a real-browser
+  TLS fingerprint to get past Cloudflare. Letterboxd has no watchlist RSS. If the
+  scrape fails, `watchlist_checker.py` falls back to the export ZIP and warns when it's
+  more than 14 days old.
 - **Watched history** (`recommendations.py`): loads full history from the export ZIP,
   then layers the live activity RSS on top to catch recent watches not yet exported.
 - **Matching:** theatre listings are fuzzy-matched against Letterboxd titles, since

@@ -1,3 +1,4 @@
 anthropic
 PyYAML
 pytest
+curl_cffi
