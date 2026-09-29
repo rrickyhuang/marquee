@@ -626,7 +626,7 @@ def _group_other_by_film(other_by_date):
                 "title": e["title"], "year": e["year"], "url": e["url"],
                 "watched": e.get("watched", False), "theatres": {},
             })
-            t = f["theatres"].setdefault(e["theatre"], {"url": e["theatre_url"], "days": {}})
+            t = f["theatres"].setdefault(e["theatre"], {"days": {}})
             times = t["days"].setdefault(day_label, [])
             if e["time"] not in times:
                 times.append(e["time"])
@@ -638,7 +638,6 @@ def _group_other_by_film(other_by_date):
         theatres = [
             {
                 "name": name,
-                "url": info["url"],
                 "days": [
                     {"label": label, "times": sorted(times, key=_time_sort_key)}
                     for label, times in info["days"].items()
@@ -729,7 +728,6 @@ def _wrap_email(subhead_label, body_html, theatre_urls):
 def _log_size(label, html):
     size = len(html.encode("utf-8"))
     print(f"  {label} email size: {size / 1024:.0f} KB (Gmail clips at ~102 KB)")
-    return size
 
 
 def build_email_html(entries_by_date, theatre_urls):
