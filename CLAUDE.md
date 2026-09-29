@@ -44,4 +44,5 @@ homepage URL (for email links). Find CinemaClock URLs at https://www.cinemaclock
 - Secrets in `.env`: `GMAIL_APP_PASSWORD`, `ANTHROPIC_API_KEY` (see `.env.example`)
 - Email addresses and all other settings in `config.yaml`
 - Digest grouped by: day → film → cinema → showtimes
+- A second email ("everything playing", grouped by film) is sent separately so each stays under Gmail's ~102 KB clip limit; sizes are logged each run
 - Film titles link to Letterboxd. Theatre names link to theatre homepage.

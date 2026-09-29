@@ -553,8 +553,7 @@ MARQUEE_CSS = """
   .other-year { color:#7c6c58; font-size:11px; margin-left:5px; }
   .other-watched { color:#9c8a6c; font-size:10px; font-style:italic; margin-left:6px; }
   .other-venue { display:block; font-size:11.5px; color:#6f5c42; margin-top:2px; }
-  .other-venue a { color:#8f0016; text-decoration:none; }
-  .other-day { display:block; margin-top:1px; }
+  .other-venue b { color:#8f0016; font-weight:700; }
   .divider { position:relative; height:1px; background:#d8c48f; margin:30px 0 20px; }
   .divider::after { content:"\\25C6"; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
                      background:#ecdcae; color:#e8a530; padding:0 12px; font-size:10px; }
@@ -654,104 +653,64 @@ def _group_other_by_film(other_by_date):
 def _render_other_row(f):
     """Compact plain-list row for the low-priority "all films playing" section
     — intentionally not ticket-styled: this is auxiliary info, not a watchlist
-    match, so it shouldn't compete visually, and keeping it lightweight helps
-    the whole email stay under Gmail's clipping size threshold."""
+    match, so it shouldn't compete visually. It's also the bulk of the email's
+    bytes, so it's kept lean: one line per theatre (all days inline), and no
+    per-row theatre links (the footer already links every theatre)."""
     watched_html = '<span class="other-watched">(watched)</span>' if f.get("watched") else ""
     venue_lines = "".join(
-        f"""<span class="other-venue">
-          <a href="{t['url']}">{escape(t['name'])}</a>
-          {"".join(f'<span class="other-day">{d["label"]}: {", ".join(d["times"])}</span>' for d in t['days'])}
-        </span>"""
+        f'<span class="other-venue"><b>{escape(t["name"])}</b> '
+        + " · ".join(f'{d["label"]} {", ".join(d["times"])}' for d in t["days"])
+        + "</span>"
         for t in f["theatres"]
     )
-    return f"""
-    <div class="other-row">
-      <a href="{f['url']}" class="other-title">{escape(f['title'])}</a><span class="other-year">{escape(str(f['year']))}</span>{watched_html}
-      {venue_lines}
-    </div>
-    """
-
-
-def build_email_html(entries_by_date, theatre_urls, other_by_date=None):
-    """Build HTML email grouped by day.
-
-    entries_by_date: {
-        'YYYY-MM-DD': {
-            'confident': [{title, year, wl_title, theatre, theatre_url, time, url}, ...],
-            'uncertain': [...],
-        }
-    }
-    other_by_date: {
-        'YYYY-MM-DD': [{title, year, theatre, theatre_url, time, url}, ...]
-    }
-    """
-    today_str = datetime.now().strftime("%B %d, %Y")
-    has_any = any(
-        day["confident"] or day["uncertain"]
-        for day in entries_by_date.values()
+    return (
+        f'<div class="other-row"><a href="{f["url"]}" class="other-title">{escape(f["title"])}</a>'
+        f'<span class="other-year">{escape(str(f["year"]))}</span>{watched_html}{venue_lines}</div>'
     )
 
+
+# Gmail clips a message once its HTML passes ~102 KB (stripping formatting behind
+# "View entire message"), so the digest is built to stay under this budget.
+GMAIL_BUDGET_BYTES = 98_000
+
+
+def _minify_css(css):
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    css = re.sub(r"\s+", " ", css)
+    return re.sub(r"\s*([{};,>])\s*", r"\1", css).strip()
+
+
+def _minify_html(html):
+    html = re.sub(r"\s*\n\s*", " ", html)
+    return re.sub(r">\s+<", "><", html).strip()
+
+
+def _wrap_email(subhead_label, body_html, theatre_urls):
+    """Shared Marquee shell (proscenium, lit board, footer) around a body."""
+    today_str = datetime.now().strftime("%B %d, %Y")
     bulb_row = ('<span class="fbulb"></span>' * 9)
+    theatre_list = " · ".join(
+        f'<a href="{url}">{escape(name)}</a>'
+        for name, url in theatre_urls.items()
+    )
     html = f"""
     <html><head>
     <meta name="color-scheme" content="light">
     <meta name="supported-color-schemes" content="light">
-    <style>{MARQUEE_CSS}</style></head><body>
+    <style>{_minify_css(MARQUEE_CSS)}</style></head><body>
     <div class="email">
       <div class="proscenium"></div>
       <div class="board-wrap">
         <div class="bulb-row top" aria-hidden="true">{bulb_row}</div>
         <div class="board">
           <div class="board-row">MARQUEE</div>
-          <p class="subhead"><span class="star">★</span>{escape(LOCATION)} <b>Watchlist Digest</b><span class="star">★</span></p>
+          <p class="subhead"><span class="star">★</span>{escape(LOCATION)} <b>{subhead_label}</b><span class="star">★</span></p>
         </div>
         <div class="bulb-row bottom" aria-hidden="true">{bulb_row}</div>
         <p class="datestamp">{today_str}</p>
       </div>
       <div class="content">
-    """
-
-    if not has_any:
-        html += '<p class="no-matches">No watchlist matches this week.</p>'
-    else:
-        for date_str in sorted(entries_by_date):
-            day = entries_by_date[date_str]
-            if not day["confident"] and not day["uncertain"]:
-                continue
-
-            # Format day heading: "Wednesday, March 18"
-            d = datetime.strptime(date_str, "%Y-%m-%d")
-            day_label = d.strftime("%A, %B %-d") if sys.platform != "win32" else d.strftime("%A, %B {d}").replace("{d}", str(d.day))
-
-            html += f'<h3 class="day-head">{day_label}</h3>'
-
-            if day["confident"]:
-                for f in group_by_film(day["confident"]):
-                    tag_html = '<span class="tag">Rewatch</span>' if f.get("watched") else ""
-                    html += _render_ticket(f, "confident", "Now Showing", "Admit One", tag_html)
-
-            if day["uncertain"]:
-                html += '<p class="verify-note">Possible matches — verify before going:</p>'
-                for f in group_by_film(day["uncertain"]):
-                    tag_html = '<span class="tag">Rewatch</span>' if f.get("watched") else ""
-                    html += _render_ticket(f, "uncertain", "Possible Match", "Verify", tag_html)
-
-    if other_by_date:
-        # Grouped by movie, not by day (unlike the watchlist sections above) —
-        # this section is just "what's playing," so each film appears once
-        # with every theatre/day/time underneath, rather than being repeated
-        # under a separate heading for each day.
-        grouped_other = _group_other_by_film(other_by_date)
-        if grouped_other:
-            html += '<h2 class="section-head">All Films Playing This Week</h2>'
-            for f in grouped_other:
-                html += _render_other_row(f)
-
-    theatre_list = " · ".join(
-        f'<a href="{url}">{escape(name)}</a>'
-        for name, url in theatre_urls.items()
-    )
-    html += f"""
+        {body_html}
         <div class="divider"></div>
         <div class="popcorn-wrap" aria-hidden="true"><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span></div>
         <p class="footer-stars">★ ★ ★</p>
@@ -764,6 +723,86 @@ def build_email_html(entries_by_date, theatre_urls, other_by_date=None):
     </div>
     </body></html>
     """
+    return _minify_html(html)
+
+
+def _log_size(label, html):
+    size = len(html.encode("utf-8"))
+    print(f"  {label} email size: {size / 1024:.0f} KB (Gmail clips at ~102 KB)")
+    return size
+
+
+def build_email_html(entries_by_date, theatre_urls):
+    """Build the watchlist digest email, grouped by day.
+
+    entries_by_date: {
+        'YYYY-MM-DD': {
+            'confident': [{title, year, wl_title, theatre, theatre_url, time, url}, ...],
+            'uncertain': [...],
+        }
+    }
+    """
+    has_any = any(
+        day["confident"] or day["uncertain"]
+        for day in entries_by_date.values()
+    )
+
+    body = ""
+    if not has_any:
+        body += '<p class="no-matches">No watchlist matches this week.</p>'
+    else:
+        for date_str in sorted(entries_by_date):
+            day = entries_by_date[date_str]
+            if not day["confident"] and not day["uncertain"]:
+                continue
+
+            # Format day heading: "Wednesday, March 18"
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+            day_label = d.strftime("%A, %B %-d") if sys.platform != "win32" else d.strftime("%A, %B {d}").replace("{d}", str(d.day))
+
+            body += f'<h3 class="day-head">{day_label}</h3>'
+
+            if day["confident"]:
+                for f in group_by_film(day["confident"]):
+                    tag_html = '<span class="tag">Rewatch</span>' if f.get("watched") else ""
+                    body += _render_ticket(f, "confident", "Now Showing", "Admit One", tag_html)
+
+            if day["uncertain"]:
+                body += '<p class="verify-note">Possible matches — verify before going:</p>'
+                for f in group_by_film(day["uncertain"]):
+                    tag_html = '<span class="tag">Rewatch</span>' if f.get("watched") else ""
+                    body += _render_ticket(f, "uncertain", "Possible Match", "Verify", tag_html)
+
+    html = _wrap_email("Watchlist Digest", body, theatre_urls)
+    _log_size("Watchlist", html)
+    return html
+
+
+def build_all_films_html(other_by_date, theatre_urls, max_bytes=GMAIL_BUDGET_BYTES):
+    """Build the "everything playing" email, grouped by film (each film appears
+    once with every theatre/day/time underneath). If it would exceed max_bytes,
+    already-watched films are dropped, with a note saying so.
+
+    other_by_date: {
+        'YYYY-MM-DD': [{title, year, theatre, theatre_url, time, url}, ...]
+    }
+    """
+    grouped = _group_other_by_film(other_by_date)
+
+    def render(films, note=""):
+        body = '<h2 class="section-head">All Films Playing This Week</h2>' + note
+        if not films:
+            body += '<p class="no-matches">Nothing listed for this week.</p>'
+        return _wrap_email("All Films Playing", body + "".join(_render_other_row(f) for f in films), theatre_urls)
+
+    html = render(grouped)
+    if len(html.encode("utf-8")) > max_bytes:
+        print("  ! all-films email over budget — omitting already-watched films")
+        html = render(
+            [f for f in grouped if not f.get("watched")],
+            '<p class="verify-note">Already-watched films omitted to keep this email under Gmail&#8217;s size limit.</p>',
+        )
+    _log_size("All-films", html)
     return html
 
 
@@ -919,8 +958,14 @@ def main():
         if total_matches
         else f"🎬 Marquee: no watchlist matches the {span} — {LOCATION}"
     )
-    html = build_email_html(dict(entries_by_date), THEATRES, dict(other_by_date))
+    html = build_email_html(dict(entries_by_date), THEATRES)
     send_email(subject, html)
+
+    # Second, separate email for the full listing — kept apart so the watchlist
+    # digest stays well under Gmail's clipping size.
+    if other_by_date:
+        all_films_subject = f"🎬 Marquee: everything playing the {span} — {LOCATION}"
+        send_email(all_films_subject, build_all_films_html(dict(other_by_date), THEATRES))
 
     print(f"\nDone. {total_matches} confirmed match(es) across all theatres.\n")
 

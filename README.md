@@ -15,7 +15,7 @@ It's built for repertory- and arthouse-heavy cities: if your theatres are listed
 ## What you get
 
 - **Watchlist digest** (`watchlist_checker.py`) — an email grouped by day → film
-  → cinema → showtimes, covering the next few days (`watchlist.lookahead_days`).
+  → cinema → showtimes, covering the next few days (`watchlist.lookahead_days`). A second, separate email lists every film playing (grouped by film) so the digest stays under Gmail's ~102 KB clipping size.
   Confident matches are highlighted; uncertain fuzzy matches are flagged separately
   to verify. Films you've already watched are tagged as rewatches.
 - **Monthly recommendations** (`recommendations.py`) — excludes everything you've
