@@ -369,22 +369,30 @@ def scrape_cinemaclock(url):
             # Year: CinemaClock's film slug ends in it (/movies/forgotten-island-2026)
             # for nearly every film; fall back to the first 4-digit year in the
             # moviegenre paragraph. Stays blank for one-off events.
+            genre_m = re.search(
+                r"class=['\"]moviegenre['\"][^>]*>(.*?)</p>", block, re.DOTALL
+            )
             year = ""
             slug_m = re.search(r"-((?:19|20)\d{2})$", movie_path)
             if slug_m:
                 year = slug_m.group(1)
-            else:
-                year_m = re.search(
-                    r"class=['\"]moviegenre['\"][^>]*>(.*?)</p>", block, re.DOTALL
-                )
-                if year_m:
-                    yr = re.search(r"\b((?:19|20)\d{2})\b", year_m.group(1))
-                    year = yr.group(1) if yr else ""
+            elif genre_m:
+                yr = re.search(r"\b((?:19|20)\d{2})\b", genre_m.group(1))
+                year = yr.group(1) if yr else ""
+
+            # Runtime ("1h49m" / "45m") sits in the same moviegenre paragraph;
+            # absent for one-off events.
+            runtime = ""
+            if genre_m:
+                rt = re.search(r"(?<!\w)(?:(\d+)h)?(\d{1,2})m(?!\w)", genre_m.group(1))
+                if rt:
+                    runtime = f"{rt.group(1)}h{rt.group(2)}m" if rt.group(1) else f"{rt.group(2)}m"
 
             showtimes = extract_dated_showtimes(block, today)
             films.append({
                 "title": title,
                 "year": year,
+                "runtime": runtime,
                 "showtimes": showtimes,
                 "url": movie_url,
             })
@@ -475,7 +483,7 @@ def group_by_film(entries):
     """Collapse flat [{title, theatre, time, ...}] into per-film groups.
 
     Returns list of:
-        {title, year, wl_title, url,
+        {title, year, runtime, wl_title, url,
          theatres: [{name, url, times: [str, ...]}, ...]}
     sorted alphabetically by title.
     """
@@ -484,6 +492,7 @@ def group_by_film(entries):
         f = films.setdefault(e["title"], {
             "title": e["title"],
             "year": e["year"],
+            "runtime": e.get("runtime", ""),
             "wl_title": e.get("wl_title", ""),
             "wl_year": e.get("wl_year", ""),
             "url": e["url"],
@@ -644,6 +653,7 @@ def _render_ticket(f, variant, eyebrow, stub_label, tag_html=""):
       {wl_note}
     </div>
     """
+    runtime_html = f" · {escape(f['runtime'])}" if f.get("runtime") else ""
     tickets = "".join(
         f"""
         <div class="ticket {variant}">
@@ -653,7 +663,7 @@ def _render_ticket(f, variant, eyebrow, stub_label, tag_html=""):
             <a href="{t['url']}" class="venue-name">{escape(t['name'])}</a>
             {"".join(f'<span class="time">{tm}</span>' for tm in t['times'])}
           </div>
-          <div class="ticket-stub-bar">{stub_label} · No. {abs(hash(f['title'] + t['name'])) % 10000:04d}</div>
+          <div class="ticket-stub-bar">{stub_label}{runtime_html} · No. {abs(hash(f['title'] + t['name'])) % 10000:04d}</div>
         </div>
         """
         for t in f["theatres"]
@@ -929,6 +939,7 @@ def main():
                     entries_by_date[st["date"]]["confident"].append({
                         "title": m["title"],
                         "year": m["year"],
+                        "runtime": m.get("runtime", ""),
                         "wl_title": m["wl_title"],
                         "wl_year": m.get("wl_year", ""),
                         "score": m["score"],
@@ -951,6 +962,7 @@ def main():
                         entries_by_date[st["date"]]["uncertain"].append({
                             "title": m["title"],
                             "year": m["year"],
+                            "runtime": m.get("runtime", ""),
                             "wl_title": m["wl_title"],
                             "wl_year": m.get("wl_year", ""),
                             "score": m["score"],
