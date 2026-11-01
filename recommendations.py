@@ -620,13 +620,15 @@ def register_scheduled_task():
         else:
             created.append(task_name)
 
-    day_str = ", ".join(days)
-    if not errors:
-        print(f'✓ Task registered — runs on day {day_str} of each month at {time_}')
+    if created:
         from schedule_settings import apply_task_settings
         err = apply_task_settings(created)
         if err:
             print(f"  ⚠ Couldn't enable catch-up/wake/battery settings:\n  {err}")
+
+    day_str = ", ".join(days)
+    if not errors:
+        print(f'✓ Task registered — runs on day {day_str} of each month at {time_}')
     else:
         for e in errors:
             print(e)
