@@ -1059,6 +1059,10 @@ def register_scheduled_task():
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if result.returncode == 0:
         print(f'✓ Task "{task_name}" registered — runs every {interval} day(s) at {time_}')
+        from schedule_settings import apply_task_settings
+        err = apply_task_settings([task_name])
+        if err:
+            print(f"  ⚠ Couldn't enable catch-up/wake/battery settings:\n  {err}")
     else:
         print(f'✗ schtasks failed:\n{result.stderr.strip()}')
         print("  You may need to run this from an elevated (admin) prompt.")

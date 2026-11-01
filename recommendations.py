@@ -605,6 +605,7 @@ def register_scheduled_task():
     )
 
     errors = []
+    created = []
     for d in days:
         task_name = f"Letterboxd Recommendations ({d})" if len(days) > 1 else "Letterboxd Recommendations"
         cmd = (
@@ -616,10 +617,16 @@ def register_scheduled_task():
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             errors.append(f'  "{task_name}": {result.stderr.strip()}')
+        else:
+            created.append(task_name)
 
     day_str = ", ".join(days)
     if not errors:
         print(f'✓ Task registered — runs on day {day_str} of each month at {time_}')
+        from schedule_settings import apply_task_settings
+        err = apply_task_settings(created)
+        if err:
+            print(f"  ⚠ Couldn't enable catch-up/wake/battery settings:\n  {err}")
     else:
         for e in errors:
             print(e)
