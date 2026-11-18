@@ -1,6 +1,10 @@
 """Tests for run-health reporting: showtime dating, scrape status, watchlist source,
 and how failures surface in the digest email and exit status."""
+import os
+import time
 from datetime import date
+
+import pytest
 
 import watchlist_checker as wc
 
@@ -42,8 +46,6 @@ def test_stats_argument_is_optional():
 
 
 # ── scrape_cinemaclock: status instead of silent [] ───────────────────────────
-
-import pytest
 
 
 def _page(*blocks):
@@ -118,3 +120,59 @@ def test_dropped_showtimes_make_the_scrape_suspicious(monkeypatch, no_sleep):
     films, status = wc.scrape_cinemaclock("http://x")
     assert len(films) == 2
     assert status["state"] == "suspicious" and "1 showtime(s) skipped" in status["reason"]
+
+
+# ── load_watchlist: which source, and why ─────────────────────────────────────
+
+
+def test_live_watchlist_is_reported_as_live(monkeypatch):
+    monkeypatch.setattr(wc, "fetch_watchlist_page", lambda errors=None: [("Dune", "2021", "u")])
+    entries, info = wc.load_watchlist()
+    assert entries == [("Dune", "2021", "u")]
+    assert info == {"source": "live", "count": 1, "zip_age_days": None, "reason": ""}
+
+
+def _failing_live(reason):
+    def fetch(errors=None):
+        errors.append(reason)
+        return None
+    return fetch
+
+
+def test_zip_fallback_reports_source_age_and_live_failure(monkeypatch, tmp_path):
+    zip_path = tmp_path / "letterboxd-x.zip"
+    zip_path.write_bytes(b"")
+    os.utime(zip_path, (time.time() - 20 * 86400,) * 2)
+    monkeypatch.setattr(wc, "fetch_watchlist_page", _failing_live("HTTP 403 on page 1"))
+    monkeypatch.setattr(wc, "load_letterboxd_export", lambda: (set(), [("Heat", "1995", "u")]))
+    monkeypatch.setattr(wc.glob, "glob", lambda pattern: [str(zip_path)])
+    entries, info = wc.load_watchlist()
+    assert entries == [("Heat", "1995", "u")]
+    assert info["source"] == "zip" and info["zip_age_days"] == 20
+    assert "HTTP 403 on page 1" in info["reason"]
+
+
+def test_no_live_and_no_zip_is_an_empty_watchlist_with_reason(monkeypatch):
+    monkeypatch.setattr(wc, "fetch_watchlist_page", _failing_live("curl_cffi is not installed"))
+    monkeypatch.setattr(wc, "load_letterboxd_export", lambda: (set(), []))
+    entries, info = wc.load_watchlist()
+    assert entries == []
+    assert info["source"] == "none" and info["count"] == 0
+    assert "curl_cffi is not installed" in info["reason"] and "no export ZIP" in info["reason"]
+
+
+# ── main(): an empty watchlist is a failed run, not a quiet one ───────────────
+
+def test_empty_watchlist_sends_failure_email_and_exits_nonzero(monkeypatch):
+    sent = []
+    monkeypatch.setattr(wc, "load_watched_titles", lambda: set())
+    monkeypatch.setattr(wc, "load_watchlist", lambda: ([], {"source": "none", "count": 0, "zip_age_days": None, "reason": "it broke"}))
+    monkeypatch.setattr(wc, "scrape_cinemaclock", lambda url: pytest.fail("must not scrape without a watchlist"))
+    monkeypatch.setattr(wc, "THEATRES", {"A": "http://a"})
+    monkeypatch.setattr(wc, "send_email", lambda subject, html: sent.append((subject, html)) or True)
+    assert wc.main() == 1
+    assert len(sent) == 1
+    subject, html = sent[0]
+    assert "run failed" in subject and subject.startswith("⚠")
+    assert "it broke" in html
+    assert "Theatres checked" not in html

@@ -148,7 +148,7 @@ def _parse_watchlist_page(html):
     return entries
 
 
-def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100):
+def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100, errors=None):
     """Scrape the live watchlist from letterboxd.com/<user>/watchlist/.
 
     Letterboxd has no watchlist RSS (404), and plain urllib gets blocked by
@@ -156,12 +156,15 @@ def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100)
     fingerprint. Returns the complete list of (title, year, lb_url), or None if
     anything goes wrong (missing dependency, blocked, no films found, a page
     failing partway) so the caller can fall back to the export ZIP instead of
-    trusting a partial list.
+    trusting a partial list. If `errors` is a list, the reason for a failure is
+    appended to it.
     """
     try:
         from curl_cffi import requests as cffi_requests
     except ImportError:
         print("  curl_cffi not installed — cannot scrape live watchlist")
+        if errors is not None:
+            errors.append("curl_cffi is not installed")
         return None
 
     entries, seen = [], set()
@@ -187,35 +190,50 @@ def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100)
             raise RuntimeError(f"still more pages after {max_pages}")
     except Exception as e:
         print(f"  Live watchlist scrape failed ({e})")
+        if errors is not None:
+            errors.append(str(e))
         return None
     return entries
 
 
 def load_watchlist():
-    """Return the watchlist as a list of (title, year, lb_url).
+    """Return (entries, info): the watchlist as (title, year, lb_url) triples, and
+    a record of where it came from.
 
     Primary source is the live watchlist page (always current, and reflects
     removals). If that fails, falls back to the export ZIP, which is only as
-    fresh as the last time it was exported — a warning is printed if it's old.
+    fresh as the last time it was exported. If neither works the list is empty.
+
+    info = {"source": "live" | "zip" | "none", "count": int,
+            "zip_age_days": int | None, "reason": str}
+    where reason says why the live scrape wasn't used (empty for "live").
     """
     print("Loading watchlist...")
-    live = fetch_watchlist_page()
+    errors = []
+    live = fetch_watchlist_page(errors=errors)
     if live:
         print(f"  {len(live)} films from live watchlist page")
-        return live
+        return live, {"source": "live", "count": len(live), "zip_age_days": None, "reason": ""}
+    live_reason = errors[-1] if errors else "no films returned"
 
     _, zip_entries = load_letterboxd_export()
     if not zip_entries:
-        print("  Warning: live scrape failed and no export ZIP found — watchlist will be empty")
-        return []
+        print("  Warning: live scrape failed and no export ZIP found — watchlist is empty")
+        return [], {
+            "source": "none", "count": 0, "zip_age_days": None,
+            "reason": f"the live watchlist scrape failed ({live_reason}) and no export ZIP was found",
+        }
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     newest = max(glob.glob(os.path.join(script_dir, "*.zip")), key=os.path.getmtime)
-    age_days = (time.time() - os.path.getmtime(newest)) // 86400
+    age_days = int((time.time() - os.path.getmtime(newest)) // 86400)
     print(f"  {len(zip_entries)} films from ZIP (fallback)")
     if age_days >= STALE_ZIP_DAYS:
-        print(f"  Warning: export ZIP is {int(age_days)} days old — watchlist may be out of date")
-    return zip_entries
+        print(f"  Warning: export ZIP is {age_days} days old — watchlist may be out of date")
+    return zip_entries, {
+        "source": "zip", "count": len(zip_entries), "zip_age_days": age_days,
+        "reason": f"the live watchlist scrape failed ({live_reason})",
+    }
 
 
 def load_watched_titles():
@@ -802,6 +820,7 @@ def _wrap_email(subhead_label, body_html, theatre_urls):
         f'<a href="{url}">{escape(name)}</a>'
         for name, url in theatre_urls.items()
     )
+    theatres_line = f"Theatres checked: {theatre_list}<br>" if theatre_list else ""
     html = f"""
     <html><head>
     <meta name="color-scheme" content="light">
@@ -824,8 +843,7 @@ def _wrap_email(subhead_label, body_html, theatre_urls):
         <div class="popcorn-wrap" aria-hidden="true"><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span></div>
         <p class="footer-stars">★ ★ ★</p>
         <p class="footer">
-          Theatres checked: {theatre_list}<br>
-          Showtimes via CinemaClock. Verify at venue before going.
+          {theatres_line}Showtimes via CinemaClock. Verify at venue before going.
         </p>
         <p class="footer-fineprint">One digest per household · No refunds, exchanges, or regrets · Void where showtimes have changed</p>
       </div>
@@ -914,6 +932,17 @@ def build_all_films_html(other_by_date, theatre_urls, max_bytes=GMAIL_BUDGET_BYT
     return html
 
 
+def build_failure_html(reasons):
+    """A short "this run failed" email, for runs that can't produce a digest at all."""
+    items = "".join(f"<p class=\"no-matches\">{escape(r)}</p>" for r in reasons)
+    body = (
+        '<h2 class="section-head">Run Failed</h2>' + items
+        + '<p class="verify-note">No watchlist digest was produced this run. '
+        "Check the console output of the scheduled run for details.</p>"
+    )
+    return _wrap_email("Run Failed", body, {})
+
+
 def send_email(subject, html_body):
     if not GMAIL_APP_PASSWORD:
         print("Email not configured. Set GMAIL_APP_PASSWORD in .env.")
@@ -956,7 +985,13 @@ def main():
     watched_norms = load_watched_titles()
     print(f"  {len(watched_norms)} watched films (ZIP + activity RSS)")
 
-    watchlist = load_watchlist()
+    watchlist, watchlist_info = load_watchlist()
+    if not watchlist:
+        reason = f"The watchlist could not be loaded: {watchlist_info['reason']}."
+        print(f"\n✗ {reason}\n  Not running the digest against an empty watchlist.")
+        send_email(f"⚠ Marquee: run failed — watchlist could not be loaded — {LOCATION}",
+                   build_failure_html([reason]))
+        return 1
 
     theatre_status = {}  # theatre name → {"state", "reason"} from scrape_cinemaclock
     for theatre_name, url in THEATRES.items():
@@ -1119,4 +1154,4 @@ if __name__ == "__main__":
     if "--schedule" in sys.argv:
         register_scheduled_task()
     else:
-        main()
+        sys.exit(main())
