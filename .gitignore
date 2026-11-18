@@ -10,7 +10,6 @@
 !recommendations.py
 !run_watchlist_checker.bat
 !requirements.txt
-!test_health.py
 !config.example.yaml
 !.env.example
 !conftest.py
