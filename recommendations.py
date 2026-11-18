@@ -288,10 +288,26 @@ def slugify(title):
     return t.strip("-")
 
 
+# Characters a Letterboxd slug is built from reliably; anything else (accents,
+# parentheses, symbols...) makes the guessed slug unlikely to match a real film.
+_SLUG_SAFE_TITLE = re.compile(r"[A-Za-z0-9\s'\u2019.,:;!?&-]+")
+# CinemaClock appends format/event wording that is not part of the film's title.
+_EVENT_SUFFIX = re.compile(
+    r"\b(?:3D|IMAX|4DX|ScreenX|Dolby|D-BOX|Q\s*&\s*A|Sing-?Along|Anniversary|Encore)\b", re.IGNORECASE
+)
+
+
+def _slug_is_reliable(title):
+    """Whether slugify(title) is likely to be the film's real Letterboxd slug."""
+    return bool(_SLUG_SAFE_TITLE.fullmatch(title)) and not _EVENT_SUFFIX.search(title)
+
+
 def lb_film_url(title, year=""):
-    """Slug-based Letterboxd URL, falling back to a search URL."""
+    """Slug-based Letterboxd film URL for ordinary titles; a search URL when the
+    title is empty or its slug would be a guess (non-ASCII, unusual punctuation,
+    or format/event wording like "3D" or "Q&A")."""
     slug = slugify(title)
-    if slug:
+    if slug and _slug_is_reliable(title):
         return f"https://letterboxd.com/film/{slug}/"
     query = urllib.parse.quote_plus(f"{title} {year}".strip())
     return f"https://letterboxd.com/search/{query}/"
