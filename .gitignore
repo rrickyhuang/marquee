@@ -16,7 +16,6 @@
 !test_schedule.py
 !schedule_settings.py
 !test_email_html.py
-!test_core_functions.py
 
 # Allow .claude config (but not local overrides)
 !.claude/
