@@ -25,7 +25,7 @@ MINIMAL_CFG = {
         "max": 6,
         "model": "claude-sonnet-4-6",
         "max_tokens": 512,
-        "schedule_day": 1,
+        "schedule_days": 1,
         "schedule_time": "21:00",
     },
     "taste_profile": {"description": "", "five_star_films": [], "liked_films": []},
