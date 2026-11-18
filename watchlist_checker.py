@@ -309,13 +309,21 @@ def fmt_time(data_time_str):
     return f"{h12}:{m:02d}{suffix}"
 
 
-def extract_dated_showtimes(block, today):
+def extract_dated_showtimes(block, today, stats=None):
     """Scan a movie's HTML block and return list of {date, time} dicts.
 
     CinemaClock structure:
         <u>Thu <span class="timesdate">Mar 19</span></u>
         <i><span class="tix" data-time="1130">11:30am </span> ...</i>
+
+    A showtime is only kept when the date header above it parsed. Times that
+    follow an unparseable header, or that appear before any header, are dropped
+    rather than guessed (the old behaviour put them on the previous header's day
+    or on today). Pass a dict as `stats` to have the drops counted:
+    stats["unparsed_headers"] and stats["undated_showtimes"].
     """
+    if stats is None:
+        stats = {}
     showtimes = []
     current_date = None
 
@@ -329,15 +337,14 @@ def extract_dated_showtimes(block, today):
     for m in token_re.finditer(block):
         date_text, data_time = m.group(1), m.group(2)
         if date_text:
-            parsed = parse_relative_date(date_text.strip(), today)
-            if parsed:
-                current_date = parsed
+            current_date = parse_relative_date(date_text.strip(), today)
+            if current_date is None:
+                stats["unparsed_headers"] = stats.get("unparsed_headers", 0) + 1
         elif data_time:
-            if current_date is not None:
-                showtimes.append({"date": current_date.isoformat(), "time": fmt_time(data_time)})
+            if current_date is None:
+                stats["undated_showtimes"] = stats.get("undated_showtimes", 0) + 1
             else:
-                # No date header seen yet — fall back to today
-                showtimes.append({"date": today.isoformat(), "time": fmt_time(data_time)})
+                showtimes.append({"date": current_date.isoformat(), "time": fmt_time(data_time)})
 
     return showtimes
 
