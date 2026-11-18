@@ -3,6 +3,7 @@
 
 # Allow project files
 !.gitignore
+!test_*.py
 !LICENSE
 !README.md
 !CLAUDE.md
