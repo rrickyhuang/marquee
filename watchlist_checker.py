@@ -1045,9 +1045,9 @@ def register_scheduled_task():
     means every showtime gets covered by some run, without long gaps.
     """
     if sys.platform != "win32":
-        print("--schedule is only supported on Windows (Task Scheduler). On macOS/Linux, "
-              f"use cron to run {os.path.basename(__file__)} directly (see README).")
-        return
+        # Exit non-zero so a setup script or CI step doesn't mistake this for a registered task.
+        from schedule_settings import unsupported_platform_message
+        sys.exit(unsupported_platform_message(os.path.basename(__file__)))
     import subprocess
     script    = os.path.abspath(__file__)
     python    = sys.executable
