@@ -193,7 +193,7 @@ def _parse_watchlist_page(html):
     return entries
 
 
-def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100):
+def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100, errors=None):
     """Scrape the live watchlist from letterboxd.com/<user>/watchlist/.
 
     Letterboxd has no watchlist RSS (404), and plain urllib gets blocked by
@@ -201,12 +201,15 @@ def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100)
     fingerprint. Returns the complete list of (title, year, lb_url), or None if
     anything goes wrong (missing dependency, blocked, no films found, a page
     failing partway) so the caller can fall back to the export ZIP instead of
-    trusting a partial list.
+    trusting a partial list. If `errors` is a list, the reason for a failure is
+    appended to it.
     """
     try:
         from curl_cffi import requests as cffi_requests
     except ImportError:
         print("  curl_cffi not installed — cannot scrape live watchlist")
+        if errors is not None:
+            errors.append("curl_cffi is not installed")
         return None
 
     entries, seen = [], set()
@@ -232,39 +235,55 @@ def fetch_watchlist_page(username=_cfg["letterboxd"]["username"], max_pages=100)
             raise RuntimeError(f"still more pages after {max_pages}")
     except Exception as e:
         print(f"  Live watchlist scrape failed ({e})")
+        if errors is not None:
+            errors.append(str(e))
         return None
     return entries
 
 
 def load_watchlist():
-    """Return the watchlist as a list of (title, year, lb_url).
+    """Return (entries, info): the watchlist as (title, year, lb_url) triples, and
+    a record of where it came from.
 
     Primary source is the live watchlist page (always current, and reflects
     removals). If that fails, falls back to the export ZIP, which is only as
-    fresh as the last time it was exported — a warning is printed if it's old.
+    fresh as the last time it was exported. If neither works the list is empty.
+
+    info = {"source": "live" | "zip" | "none", "count": int,
+            "zip_age_days": int | None, "reason": str}
+    where reason says why the live scrape wasn't used (empty for "live").
     """
     print("Loading watchlist...")
-    live = fetch_watchlist_page()
+    errors = []
+    live = fetch_watchlist_page(errors=errors)
     if live:
         print(f"  {len(live)} films from live watchlist page")
-        return live
+        return live, {"source": "live", "count": len(live), "zip_age_days": None, "reason": ""}
+    live_reason = errors[-1] if errors else "no films returned"
 
     _, zip_entries = load_letterboxd_export()
     if not zip_entries:
-        print("  Warning: live scrape failed and no export ZIP found — watchlist will be empty")
-        return []
+        print("  Warning: live scrape failed and no export ZIP found — watchlist is empty")
+        return [], {
+            "source": "none", "count": 0, "zip_age_days": None,
+            "reason": f"the live watchlist scrape failed ({live_reason}) and no export ZIP was found",
+        }
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     newest = max(glob.glob(os.path.join(script_dir, "*.zip")), key=os.path.getmtime)
-    age_days = (time.time() - os.path.getmtime(newest)) // 86400
+    age_days = int((time.time() - os.path.getmtime(newest)) // 86400)
     print(f"  {len(zip_entries)} films from ZIP (fallback)")
     if age_days >= STALE_ZIP_DAYS:
-        print(f"  Warning: export ZIP is {int(age_days)} days old — watchlist may be out of date")
-    return zip_entries
+        print(f"  Warning: export ZIP is {age_days} days old — watchlist may be out of date")
+    return zip_entries, {
+        "source": "zip", "count": len(zip_entries), "zip_age_days": age_days,
+        "reason": f"the live watchlist scrape failed ({live_reason})",
+    }
 
 
 def load_watched_titles():
-    """Return a set of normalized watched titles.
+    """Return (watched, note): a set of normalized watched titles, and a note
+    ("" when all sources loaded) saying what was unavailable.
 
     ZIP is the primary source (full history). The activity RSS
     (diary entries at /username/rss/) patches in recent watches not yet
@@ -272,6 +291,7 @@ def load_watched_titles():
     Cloudflare-blocked.
     """
     watched_norms, _ = load_letterboxd_export()
+    note = ""
     try:
         xml = fetch_html(LETTERBOXD_ACTIVITY_RSS)
         for item_m in re.finditer(r"<item>(.*?)</item>", xml, re.DOTALL):
@@ -281,7 +301,8 @@ def load_watched_titles():
                 watched_norms.add(normalize(title_m.group(1).strip()))
     except Exception as e:
         print(f"  Warning: could not fetch activity RSS ({e}); using ZIP only")
-    return watched_norms
+        note = f"Recent watches couldn't be loaded from Letterboxd ({e}), so the \"already watched\" tags use the export ZIP only."
+    return watched_norms, note
 
 
 # ── LETTERBOXD URL ────────────────────────────────────────────────────────────
@@ -358,17 +379,18 @@ def parse_relative_date(text, today):
         return today
     if lower == "tomorrow":
         return today + timedelta(days=1)
-    # Try various abbreviated/full formats like "Mar 18", "Fri Mar 21", "Friday March 21"
+    text = re.sub(r"\bSept\b", "Sep", text, flags=re.IGNORECASE)  # %b only knows "Sep"
+    # Formats like "Mar 18", "Fri Mar 21", "Friday March 21". Parsed with an explicit
+    # year (a yearless strptime assumes 1900, which has no Feb 29); a date more than
+    # 60 days in the past is taken to be next year's.
     for fmt in ("%b %d", "%B %d", "%a %b %d", "%A %b %d", "%a %B %d", "%A %B %d"):
-        try:
-            d = datetime.strptime(text, fmt)
-            candidate = d.replace(year=today.year).date()
-            # If the date is more than 60 days in the past, assume it rolled to next year
-            if (candidate - today).days < -60:
-                candidate = d.replace(year=today.year + 1).date()
-            return candidate
-        except ValueError:
-            continue
+        for year in (today.year, today.year + 1):
+            try:
+                candidate = datetime.strptime(f"{text} {year}", f"{fmt} %Y").date()
+            except ValueError:
+                continue
+            if (candidate - today).days >= -60:
+                return candidate
     return None
 
 
@@ -381,13 +403,21 @@ def fmt_time(data_time_str):
     return f"{h12}:{m:02d}{suffix}"
 
 
-def extract_dated_showtimes(block, today):
+def extract_dated_showtimes(block, today, stats=None):
     """Scan a movie's HTML block and return list of {date, time} dicts.
 
     CinemaClock structure:
         <u>Thu <span class="timesdate">Mar 19</span></u>
         <i><span class="tix" data-time="1130">11:30am </span> ...</i>
+
+    A showtime is only kept when the date header above it parsed. Times that
+    follow an unparseable header, or that appear before any header, are dropped
+    rather than guessed (the old behaviour put them on the previous header's day
+    or on today). Pass a dict as `stats` to have the drops counted:
+    stats["unparsed_headers"] and stats["undated_showtimes"].
     """
+    if stats is None:
+        stats = {}
     showtimes = []
     current_date = None
 
@@ -401,27 +431,47 @@ def extract_dated_showtimes(block, today):
     for m in token_re.finditer(block):
         date_text, data_time = m.group(1), m.group(2)
         if date_text:
-            parsed = parse_relative_date(date_text.strip(), today)
-            if parsed:
-                current_date = parsed
+            current_date = parse_relative_date(date_text.strip(), today)
+            if current_date is None:
+                stats["unparsed_headers"] = stats.get("unparsed_headers", 0) + 1
         elif data_time:
-            if current_date is not None:
-                showtimes.append({"date": current_date.isoformat(), "time": fmt_time(data_time)})
+            if current_date is None:
+                stats["undated_showtimes"] = stats.get("undated_showtimes", 0) + 1
             else:
-                # No date header seen yet — fall back to today
-                showtimes.append({"date": today.isoformat(), "time": fmt_time(data_time)})
+                showtimes.append({"date": current_date.isoformat(), "time": fmt_time(data_time)})
 
     return showtimes
 
 
-def scrape_cinemaclock(url):
-    """Return list of {title, year, showtimes, url} dicts from a CinemaClock theatre page.
+def scrape_cinemaclock(url, attempts=2, retry_delay=2):
+    """Scrape a CinemaClock theatre page. Returns (films, status).
 
-    showtimes is a list of {date: 'YYYY-MM-DD', time: 'H:MM'} dicts.
+    films is a list of {title, year, showtimes, url} dicts; showtimes is a list
+    of {date: 'YYYY-MM-DD', time: 'H:MM'} dicts.
+
+    status is {"state": "ok" | "failed" | "suspicious", "reason": str}, so an
+    unreadable theatre isn't mistaken for a quiet week:
+      failed      the page couldn't be fetched (after `attempts` tries) or parsed
+      suspicious  it loaded but looks wrong: no film listings, listings with no
+                  readable showtimes, or showtimes dropped for unreadable dates
     """
+    html, error = None, None
+    for attempt in range(1, attempts + 1):
+        try:
+            html = fetch_html(url)
+            break
+        except Exception as e:
+            error = e
+            if attempt < attempts:
+                print(f"  Fetch failed ({e}); retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+    if html is None:
+        print(f"  Error scraping {url}: {error}")
+        return [], {"state": "failed", "reason": f"could not fetch the page ({error})"}
+
     try:
         today = date.today()
-        html = fetch_html(url)
+        date_stats = {}
         films = []
         blocks = re.split(r'(?=<div[^>]+class="showtimeblock movie)', html)
         for block in blocks:
@@ -460,7 +510,7 @@ def scrape_cinemaclock(url):
                 if rt:
                     runtime = f"{rt.group(1)}h{rt.group(2)}m" if rt.group(1) else f"{rt.group(2)}m"
 
-            showtimes = extract_dated_showtimes(block, today)
+            showtimes = extract_dated_showtimes(block, today, date_stats)
             films.append({
                 "title": title,
                 "year": year,
@@ -468,10 +518,28 @@ def scrape_cinemaclock(url):
                 "showtimes": showtimes,
                 "url": movie_url,
             })
-        return films
     except Exception as e:
         print(f"  Error scraping {url}: {e}")
-        return []
+        return [], {"state": "failed", "reason": f"could not parse the page ({e})"}
+
+    reasons = []
+    if not films:
+        reasons.append("no film listings found on the page (layout change, or a wrong theatre URL?)")
+    elif not any(f["showtimes"] for f in films):
+        reasons.append(f"{len(films)} film(s) listed but no showtimes could be read")
+    dropped = date_stats.get("unparsed_headers", 0), date_stats.get("undated_showtimes", 0)
+    if dropped[1]:
+        reasons.append(
+            f"{dropped[1]} showtime(s) skipped because their date header "
+            + ("was unreadable" if dropped[0] else "was missing")
+        )
+    if reasons:
+        status = {"state": "suspicious", "reason": "; ".join(reasons)}
+        print(f"  ! {status['reason']}")
+        return films, status
+    return films, {"state": "ok", "reason": ""}
+
+
 
 
 # ── MATCHING ──────────────────────────────────────────────────────────────────
@@ -843,14 +911,60 @@ def _minify_html(html):
     return re.sub(r">\s+<", "><", html).strip()
 
 
-def _wrap_email(subhead_label, body_html, theatre_urls):
-    """Shared Marquee shell (proscenium, lit board, footer) around a body."""
+def collect_health(theatre_status, watchlist_info, watched_note=""):
+    """Summarise a run's problems for the email banner and the exit status.
+
+    Returns {"errors": [...], "notices": [...], "unchecked": {theatre: reason}}.
+    Errors mean the digest can't be fully trusted (and make the run exit
+    non-zero); notices are worth knowing but don't.
+    """
+    errors, notices = [], []
+    unchecked = {}
+    for name, st in theatre_status.items():
+        if st["state"] != "ok":
+            errors.append(f"{name}: {st['reason']}")
+            unchecked[name] = st["reason"]
+    if watchlist_info["source"] == "zip":
+        age = watchlist_info["zip_age_days"]
+        msg = (f"The watchlist came from an export ZIP ({age} day(s) old) because "
+               f"{watchlist_info['reason']}; recent additions and removals may be missing.")
+        (errors if age >= STALE_ZIP_DAYS else notices).append(msg)
+    if watched_note:
+        notices.append(watched_note)
+    return {"errors": errors, "notices": notices, "unchecked": unchecked}
+
+
+def _health_banner(health):
+    """Visible warning block for the top of an email; empty when the run was clean."""
+    if not health or not (health["errors"] or health["notices"]):
+        return ""
+    items = "".join(f"<li>{escape(m)}</li>" for m in health["errors"] + health["notices"])
+    headline = "This run had problems — treat the results below as incomplete." if health["errors"] \
+        else "Heads up about this run:"
+    return (
+        '<div style="border:2px solid #b3261e;background:#fdecea;color:#5c1a14;'
+        'padding:10px 14px;margin:0 0 18px;font-size:13px;line-height:1.45;">'
+        f'<b>⚠ {headline}</b><ul style="margin:6px 0 0 18px;padding:0;">{items}</ul></div>'
+    )
+
+
+def _wrap_email(subhead_label, body_html, theatre_urls, health=None):
+    """Shared Marquee shell (proscenium, lit board, footer) around a body.
+
+    health (from collect_health) adds a warning banner above the body and keeps
+    theatres that couldn't be read out of the "Theatres checked" list.
+    """
+    unchecked = (health or {}).get("unchecked", {})
     today_str = datetime.now().strftime("%B %d, %Y")
     bulb_row = ('<span class="fbulb"></span>' * 9)
     theatre_list = " · ".join(
         f'<a href="{url}">{escape(name)}</a>'
         for name, url in theatre_urls.items()
+        if name not in unchecked
     )
+    theatres_line = f"Theatres checked: {theatre_list}<br>" if theatre_list else ""
+    if unchecked:
+        theatres_line += f"<b>Not checked (see warning above):</b> {escape(', '.join(unchecked))}<br>"
     html = f"""
     <html><head>
     <meta name="color-scheme" content="light">
@@ -868,13 +982,12 @@ def _wrap_email(subhead_label, body_html, theatre_urls):
         <p class="datestamp">{today_str}</p>
       </div>
       <div class="content">
-        {body_html}
+        {_health_banner(health)}{body_html}
         <div class="divider"></div>
         <div class="popcorn-wrap" aria-hidden="true"><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span></div>
         <p class="footer-stars">★ ★ ★</p>
         <p class="footer">
-          Theatres checked: {theatre_list}<br>
-          Showtimes via CinemaClock. Verify at venue before going.
+          {theatres_line}Showtimes via CinemaClock. Verify at venue before going.
         </p>
         <p class="footer-fineprint">One digest per household · No refunds, exchanges, or regrets · Void where showtimes have changed</p>
       </div>
@@ -889,7 +1002,7 @@ def _log_size(label, html):
     print(f"  {label} email size: {size / 1024:.0f} KB (Gmail clips at ~102 KB)")
 
 
-def build_email_html(entries_by_date, theatre_urls):
+def build_email_html(entries_by_date, theatre_urls, health=None):
     """Build the watchlist digest email, grouped by day.
 
     entries_by_date: {
@@ -930,12 +1043,12 @@ def build_email_html(entries_by_date, theatre_urls):
                     tag_html = '<span class="tag">Rewatch</span>' if f.get("watched") else ""
                     body += _render_ticket(f, "uncertain", "Possible Match", "Verify", tag_html)
 
-    html = _wrap_email("Watchlist Digest", body, theatre_urls)
+    html = _wrap_email("Watchlist Digest", body, theatre_urls, health)
     _log_size("Watchlist", html)
     return html
 
 
-def build_all_films_html(other_by_date, theatre_urls, max_bytes=GMAIL_BUDGET_BYTES):
+def build_all_films_html(other_by_date, theatre_urls, max_bytes=GMAIL_BUDGET_BYTES, health=None):
     """Build the "everything playing" email, grouped by film (each film appears
     once with every theatre/day/time underneath). If it would exceed max_bytes,
     already-watched films are dropped, with a note saying so.
@@ -950,7 +1063,7 @@ def build_all_films_html(other_by_date, theatre_urls, max_bytes=GMAIL_BUDGET_BYT
         body = '<h2 class="section-head">All Films Playing This Week</h2>' + note
         if not films:
             body += '<p class="no-matches">Nothing listed for this week.</p>'
-        return _wrap_email("All Films Playing", body + "".join(_render_other_row(f) for f in films), theatre_urls)
+        return _wrap_email("All Films Playing", body + "".join(_render_other_row(f) for f in films), theatre_urls, health)
 
     html = render(grouped)
     if len(html.encode("utf-8")) > max_bytes:
@@ -961,6 +1074,17 @@ def build_all_films_html(other_by_date, theatre_urls, max_bytes=GMAIL_BUDGET_BYT
         )
     _log_size("All-films", html)
     return html
+
+
+def build_failure_html(reasons):
+    """A short "this run failed" email, for runs that can't produce a digest at all."""
+    items = "".join(f"<p class=\"no-matches\">{escape(r)}</p>" for r in reasons)
+    body = (
+        '<h2 class="section-head">Run Failed</h2>' + items
+        + '<p class="verify-note">No watchlist digest was produced this run. '
+        "Check the console output of the scheduled run for details.</p>"
+    )
+    return _wrap_email("Run Failed", body, {})
 
 
 def send_email(subject, html_body):
@@ -1002,14 +1126,21 @@ def main():
     total_matches = 0
 
     print("\nFetching watched titles...")
-    watched_norms = load_watched_titles()
+    watched_norms, watched_note = load_watched_titles()
     print(f"  {len(watched_norms)} watched films (ZIP + activity RSS)")
 
-    watchlist = load_watchlist()
+    watchlist, watchlist_info = load_watchlist()
+    if not watchlist:
+        reason = f"The watchlist could not be loaded: {watchlist_info['reason']}."
+        print(f"\n✗ {reason}\n  Not running the digest against an empty watchlist.")
+        send_email(f"⚠ Marquee: run failed — watchlist could not be loaded — {LOCATION}",
+                   build_failure_html([reason]))
+        return 1
 
+    theatre_status = {}  # theatre name → {"state", "reason"} from scrape_cinemaclock
     for theatre_name, url in THEATRES.items():
         print(f"\nScraping: {theatre_name}...")
-        scraped = scrape_cinemaclock(url)
+        scraped, theatre_status[theatre_name] = scrape_cinemaclock(url)
         print(f"  Found {len(scraped)} films listed")
 
         matches, uncertain = match_against_watchlist(scraped, watchlist)
@@ -1114,21 +1245,29 @@ def main():
 
     # Build and send email
     span = f"next {LOOKAHEAD_DAYS} days" if LOOKAHEAD_DAYS != 1 else "next day"
+    health = collect_health(theatre_status, watchlist_info, watched_note)
+    flag = "⚠ " if (health["errors"] or health["notices"]) else ""
     subject = (
-        f"🎬 Marquee: {total_matches} watchlist film(s) playing the {span} — {LOCATION}"
+        f"{flag}🎬 Marquee: {total_matches} watchlist film(s) playing the {span} — {LOCATION}"
         if total_matches
-        else f"🎬 Marquee: no watchlist matches the {span} — {LOCATION}"
+        else f"{flag}🎬 Marquee: no watchlist matches the {span} — {LOCATION}"
     )
-    html = build_email_html(dict(entries_by_date), THEATRES)
-    send_email(subject, html)
+    for msg in health["errors"] + health["notices"]:
+        print(f"  ⚠ {msg}")
+    html = build_email_html(dict(entries_by_date), THEATRES, health)
+    sent_ok = [send_email(subject, html)]
 
     # Second, separate email for the full listing — kept apart so the watchlist
     # digest stays well under Gmail's clipping size.
     if other_by_date:
-        all_films_subject = f"🎬 Marquee: everything playing the {span} — {LOCATION}"
-        send_email(all_films_subject, build_all_films_html(dict(other_by_date), THEATRES))
+        all_films_subject = f"{flag}🎬 Marquee: everything playing the {span} — {LOCATION}"
+        sent_ok.append(send_email(all_films_subject, build_all_films_html(dict(other_by_date), THEATRES, health=health)))
 
     print(f"\nDone. {total_matches} confirmed match(es) across all theatres.\n")
+    if health["errors"] or not all(sent_ok):
+        print("Finished with problems (see warnings above) — exiting with status 1.")
+        return 1
+    return 0
 
 
 def register_scheduled_task():
@@ -1171,4 +1310,4 @@ if __name__ == "__main__":
     if "--schedule" in sys.argv:
         register_scheduled_task()
     else:
-        main()
+        sys.exit(main())
