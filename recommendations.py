@@ -22,6 +22,7 @@ import io
 import re
 import smtplib
 import sys
+import time
 import urllib.parse
 import urllib.request
 import zipfile
@@ -226,7 +227,13 @@ def fmt_time(data_time_str):
     return f"{h12}:{m:02d}{suffix}"
 
 
-def extract_dated_showtimes(block, today):
+def extract_dated_showtimes(block, today, stats=None):
+    """Showtimes in a movie block as {date, time} dicts. A showtime is only kept
+    when the date header above it parsed; times after an unparseable header, or
+    before any header, are dropped (counted in `stats`, if given) instead of being
+    dated today or as the previous header's day."""
+    if stats is None:
+        stats = {}
     showtimes = []
     current_date = None
     token_re = re.compile(
@@ -237,19 +244,39 @@ def extract_dated_showtimes(block, today):
     for m in token_re.finditer(block):
         date_text, data_time = m.group(1), m.group(2)
         if date_text:
-            parsed = parse_relative_date(date_text.strip(), today)
-            if parsed:
-                current_date = parsed
+            current_date = parse_relative_date(date_text.strip(), today)
+            if current_date is None:
+                stats["unparsed_headers"] = stats.get("unparsed_headers", 0) + 1
         elif data_time:
-            d = current_date if current_date is not None else today
-            showtimes.append({"date": d.isoformat(), "time": fmt_time(data_time)})
+            if current_date is None:
+                stats["undated_showtimes"] = stats.get("undated_showtimes", 0) + 1
+            else:
+                showtimes.append({"date": current_date.isoformat(), "time": fmt_time(data_time)})
     return showtimes
 
 
-def scrape_cinemaclock(url):
+def scrape_cinemaclock(url, attempts=2, retry_delay=2):
+    """Scrape a CinemaClock theatre page. Returns (films, status), where status is
+    {"state": "ok" | "failed" | "suspicious", "reason": str}: "failed" when the page
+    couldn't be fetched (after `attempts` tries) or parsed, "suspicious" when it
+    loaded but has no film listings, no readable showtimes, or dropped showtimes."""
+    html, error = None, None
+    for attempt in range(1, attempts + 1):
+        try:
+            html = fetch_html(url)
+            break
+        except Exception as e:
+            error = e
+            if attempt < attempts:
+                print(f"  Fetch failed ({e}); retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+    if html is None:
+        print(f"  Error scraping {url}: {error}")
+        return [], {"state": "failed", "reason": f"could not fetch the page ({error})"}
+
     try:
         today = date.today()
-        html = fetch_html(url)
+        date_stats = {}
         films = []
         for block in re.split(r'(?=<div[^>]+class="showtimeblock movie)', html):
             title_m = re.search(
@@ -270,12 +297,27 @@ def scrape_cinemaclock(url):
             films.append({
                 "title": title,
                 "year": year,
-                "showtimes": extract_dated_showtimes(block, today),
+                "showtimes": extract_dated_showtimes(block, today, date_stats),
             })
-        return films
     except Exception as e:
         print(f"  Error scraping {url}: {e}")
-        return []
+        return [], {"state": "failed", "reason": f"could not parse the page ({e})"}
+
+    reasons = []
+    if not films:
+        reasons.append("no film listings found on the page (layout change, or a wrong theatre URL?)")
+    elif not any(f["showtimes"] for f in films):
+        reasons.append(f"{len(films)} film(s) listed but no showtimes could be read")
+    if date_stats.get("undated_showtimes"):
+        reasons.append(
+            f"{date_stats['undated_showtimes']} showtime(s) skipped because their date header "
+            + ("was unreadable" if date_stats.get("unparsed_headers") else "was missing")
+        )
+    if reasons:
+        status = {"state": "suspicious", "reason": "; ".join(reasons)}
+        print(f"  ! {status['reason']}")
+        return films, status
+    return films, {"state": "ok", "reason": ""}
 
 
 # ── LETTERBOXD URL ─────────────────────────────────────────────────────────────
@@ -299,21 +341,27 @@ def lb_film_url(title, year=""):
 
 # ── CLAUDE API ─────────────────────────────────────────────────────────────────
 
+class RecommendationError(Exception):
+    """The Claude step couldn't produce recommendations; the message says why."""
+
+
 def get_recommendations(eligible_films, min_recs=None, max_recs=None):
-    """Call Claude; return list of {title, year, reason} dicts."""
+    """Call Claude; return list of {title, year, reason} dicts.
+
+    Raises RecommendationError (with a reason) if the key or package is missing,
+    the API call fails, or the reply is cut off or isn't valid JSON.
+    """
     if min_recs is None:
         min_recs = _cfg["recommendations"]["min"]
     if max_recs is None:
         max_recs = _cfg["recommendations"]["max"]
 
     if not ANTHROPIC_API_KEY:
-        print("  ANTHROPIC_API_KEY not set — skipping Claude step")
-        return []
+        raise RecommendationError("ANTHROPIC_API_KEY is not set (add it to .env)")
     try:
         import anthropic
     except ImportError:
-        print("  anthropic package not installed. Run: pip install -r requirements.txt")
-        return []
+        raise RecommendationError("the anthropic package is not installed (pip install -r requirements.txt)")
 
     film_lines = "\n".join(
         f"- {f['title']} ({f['year']})" if f["year"] else f"- {f['title']}"
@@ -345,12 +393,18 @@ Return at least {min_recs} and at most {max_recs} items. If fewer than {min_recs
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        return json.loads(raw)
     except Exception as e:
-        print(f"  Claude API error: {e}")
-        return []
+        raise RecommendationError(f"Claude API error: {e}") from e
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise RecommendationError(
+            "Claude's reply was cut off at max_tokens — raise recommendations.max_tokens in config.yaml"
+        )
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    try:
+        return json.loads(raw)
+    except ValueError as e:
+        raise RecommendationError(f"Claude's reply wasn't valid JSON ({e})") from e
 
 
 # ── EMAIL ──────────────────────────────────────────────────────────────────────
@@ -492,8 +546,26 @@ def _render_reco_ticket(f):
     return f"{header}{tickets}</div>"
 
 
-def build_reco_email(recs_by_date):
-    """HTML email — recommendations grouped by day, then cinema."""
+def _warning_banner(warnings, failed=False):
+    """Visible warning block for the top of the email; empty when there's nothing to say."""
+    if not warnings:
+        return ""
+    headline = "This run failed — no recommendations were produced." if failed \
+        else "This run had problems — the picks below may be incomplete."
+    items = "".join(f"<li>{escape(m)}</li>" for m in warnings)
+    return (
+        '<div style="border:2px solid #b3261e;background:#fdecea;color:#5c1a14;'
+        'padding:10px 14px;margin:0 0 18px;font-size:13px;line-height:1.45;">'
+        f'<b>⚠ {headline}</b><ul style="margin:6px 0 0 18px;padding:0;">{items}</ul></div>'
+    )
+
+
+def build_reco_email(recs_by_date, warnings=None, failed=False, unchecked=()):
+    """HTML email — recommendations grouped by day, then cinema.
+
+    warnings adds a banner at the top (failed=True words it as a failed run);
+    theatres named in `unchecked` are left out of the "Theatres checked" footer.
+    """
     today_str = datetime.now().strftime("%B %d, %Y")
     has_any = any(bool(v) for v in recs_by_date.values())
 
@@ -520,8 +592,11 @@ def build_reco_email(recs_by_date):
       </p>
       <div class="content">
     """
+    html += _warning_banner(warnings, failed)
 
-    if not has_any:
+    if failed:
+        pass
+    elif not has_any:
         html += '<p class="no-matches">No recommendations this month.</p>'
     else:
         for date_str in sorted(recs_by_date):
@@ -537,13 +612,18 @@ def build_reco_email(recs_by_date):
     theatre_list = " · ".join(
         f'<a href="{url}">{escape(name)}</a>'
         for name, url in THEATRE_HOMEPAGES.items()
+        if name not in unchecked
     )
+    if unchecked:
+        theatre_list += (f'<br><b>Not checked (see warning above):</b> '
+                         f'{escape(", ".join(n for n in THEATRE_HOMEPAGES if n in unchecked))}')
+    theatres_line = "" if failed else f"Theatres checked: {theatre_list}<br>"
     html += f"""
         <div class="divider"></div>
         <div class="popcorn-wrap" aria-hidden="true"><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span></div>
         <p class="footer-stars">★ ★ ★</p>
         <p class="footer">
-          Theatres checked: {theatre_list}<br>
+          {theatres_line}
           Recommendations by Claude ({datetime.now().strftime("%B %Y")}).
           Showtimes via CinemaClock. Verify at venue before going.
         </p>
@@ -573,6 +653,15 @@ def send_email(subject, html_body):
     except Exception as e:
         print(f"✗ Email failed: {e}")
         return False
+
+
+def send_failure(reasons):
+    """Email why this run produced no recommendations, and return the exit status (1)."""
+    for r in reasons:
+        print(f"\n✗ {r}")
+    send_email(f"⚠ Marquee: recommendations run failed — {LOCATION}",
+               build_reco_email({}, warnings=reasons, failed=True))
+    return 1
 
 
 # ── TASK SCHEDULER ─────────────────────────────────────────────────────────────
@@ -649,15 +738,31 @@ def main():
     watched_norms = fetch_watched_titles()
     print(f"  Watched (RSS):    {len(watched_norms)} titles")
     _, watchlist_entries = load_letterboxd_export()
+    warnings = []  # shown in the email banner
     # Prefer the live watchlist page (current, reflects removals) over the ZIP
+    live_errors = []
     try:
         from watchlist_checker import fetch_watchlist_page
-        live = fetch_watchlist_page()
+        live = fetch_watchlist_page(errors=live_errors)
         if live:
             watchlist_entries = live
             print(f"  Watchlist (live): {len(live)} titles")
     except Exception as e:
+        live = None
+        live_errors.append(str(e))
         print(f"  Warning: could not fetch live watchlist ({e}); using ZIP")
+    if not live:
+        live_reason = live_errors[-1] if live_errors else "no films returned"
+        if not watchlist_entries:
+            # Without the watchlist, films already on it would be offered as "undiscovered".
+            return send_failure([
+                f"The watchlist could not be loaded: the live scrape failed ({live_reason}) "
+                "and no export ZIP was found."
+            ])
+        warnings.append(
+            f"The watchlist came from the export ZIP because the live scrape failed ({live_reason}); "
+            "recent additions may be missing, so some picks could already be on it."
+        )
     watchlist_norms = {normalize(t) for t, _, _ in watchlist_entries}
     print(f"  Watchlist (total):{len(watchlist_norms)} titles")
     exclude_norms = watched_norms | watchlist_norms
@@ -675,10 +780,13 @@ def main():
     print("\nScraping theatres...")
     # all_films: normalized_title → {title, year, theatres: {name: {url, times_by_date}}}
     all_films: dict = {}
+    theatre_problems: dict = {}  # theatre name → reason it couldn't be read properly
     for theatre_name, url in THEATRES.items():
         print(f"  {theatre_name}...", end=" ", flush=True)
-        scraped = scrape_cinemaclock(url)
+        scraped, status = scrape_cinemaclock(url)
         print(f"{len(scraped)} films")
+        if status["state"] != "ok":
+            theatre_problems[theatre_name] = status["reason"]
         homepage = THEATRE_HOMEPAGES.get(theatre_name, url)
         for film in scraped:
             norm = normalize(film["title"])
@@ -697,6 +805,12 @@ def main():
 
     total_playing = len(all_films)
     print(f"\n  Total unique films playing: {total_playing}")
+    warnings += [f"{name}: {reason}" for name, reason in theatre_problems.items()]
+    if not all_films:
+        return send_failure(
+            ["No films could be read from any theatre."]
+            + [f"{name}: {reason}" for name, reason in theatre_problems.items()]
+        )
 
     # 3. Filter out watchlist + watched
     eligible = {
@@ -709,17 +823,19 @@ def main():
 
     if not eligible:
         print("No eligible films — nothing to recommend.")
-        return
+        return 1 if theatre_problems else 0
 
     # 4. Ask Claude
     print("\nAsking Claude for recommendations...")
     eligible_list = sorted(eligible.values(), key=lambda f: f["title"])
-    recommendations = get_recommendations(eligible_list)
+    try:
+        recommendations = get_recommendations(eligible_list)
+    except RecommendationError as e:
+        return send_failure([f"The Claude step failed: {e}."])
     print(f"  Received {len(recommendations)} recommendation(s)")
 
     if not recommendations:
-        print("No recommendations returned.")
-        return
+        return send_failure(["Claude returned no recommendations."])
 
     # 5. Build recs_by_date
     recs_by_date: dict = defaultdict(list)
@@ -761,6 +877,12 @@ def main():
                 "theatres": sorted(theatres, key=lambda t: t["name"]),
             })
 
+    if not recs_by_date:
+        return send_failure([
+            f"Claude suggested {len(recommendations)} film(s), but none matched a current showing "
+            "with showtimes."
+        ])
+
     for date_str in recs_by_date:
         recs_by_date[date_str].sort(key=lambda f: f["title"])
 
@@ -768,31 +890,30 @@ def main():
     print(f"\n{'─'*50}")
     print("RECOMMENDATIONS BY DAY")
     print(f"{'─'*50}")
-    if not recs_by_date:
-        print("No showtime data for recommended films.")
-    else:
-        for date_str in sorted(recs_by_date):
-            d = datetime.strptime(date_str, "%Y-%m-%d")
-            print(f"\n  {d.strftime('%A %b')} {d.day}")
-            for f in recs_by_date[date_str]:
-                print(f"    ★ {f['title']} ({f['year']})")
-                print(f"      {f['reason']}")
-                for t in f["theatres"]:
-                    print(f"        {t['name']}: {', '.join(t['times'])}")
+    for date_str in sorted(recs_by_date):
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        print(f"\n  {d.strftime('%A %b')} {d.day}")
+        for f in recs_by_date[date_str]:
+            print(f"    ★ {f['title']} ({f['year']})")
+            print(f"      {f['reason']}")
+            for t in f["theatres"]:
+                print(f"        {t['name']}: {', '.join(t['times'])}")
 
     # 7. Send email
     n = len(recommendations)
+    flag = "⚠ " if warnings else ""
     subject = (
-        f"🎬 {n} film pick{'s' if n != 1 else ''} for you this month — {LOCATION} theatres"
+        f"{flag}🎬 {n} film pick{'s' if n != 1 else ''} for you this month — {LOCATION} theatres"
     )
-    html = build_reco_email(dict(recs_by_date))
-    send_email(subject, html)
+    html = build_reco_email(dict(recs_by_date), warnings=warnings, unchecked=tuple(theatre_problems))
+    sent = send_email(subject, html)
 
     print(f"\nDone. {n} recommendation(s).\n")
+    return 1 if (theatre_problems or not sent) else 0
 
 
 if __name__ == "__main__":
     if "--schedule" in sys.argv:
         register_scheduled_task()
     else:
-        main()
+        sys.exit(main())

@@ -268,3 +268,202 @@ def test_health_arguments_are_optional():
     html = wc.build_email_html({}, {"Alpha Cinema": "http://home-a"})
     assert "This run had problems" not in html and "Heads up" not in html
     assert "Alpha Cinema" in html
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# recommendations.py
+# ═════════════════════════════════════════════════════════════════════════════
+
+import sys
+import types
+
+import recommendations as rc
+
+
+# ── scraping ──────────────────────────────────────────────────────────────────
+
+def test_recs_showtimes_without_a_usable_header_are_dropped():
+    stats = {}
+    block = (
+        '<span class="tix" data-time="1000">x</span>'
+        '<span class="timesdate">Smarch 40</span><span class="tix" data-time="1400">x</span>'
+        '<span class="timesdate">Mar 21</span><span class="tix" data-time="2000">x</span>'
+    )
+    assert rc.extract_dated_showtimes(block, TODAY, stats) == [{"date": "2026-03-21", "time": "8:00pm"}]
+    assert stats == {"undated_showtimes": 2, "unparsed_headers": 1}
+
+
+def test_recs_scrape_statuses(monkeypatch, no_sleep):
+    monkeypatch.setattr(rc, "fetch_html", lambda url: _page(_block("Dune", "dune-2021")))
+    films, status = rc.scrape_cinemaclock("http://x")
+    assert status["state"] == "ok" and [f["title"] for f in films] == ["Dune"]
+
+    monkeypatch.setattr(rc, "fetch_html", lambda url: "<html>nothing here</html>")
+    films, status = rc.scrape_cinemaclock("http://x")
+    assert films == [] and status["state"] == "suspicious"
+
+    monkeypatch.setattr(rc, "fetch_html", lambda url: _page(_block("Dune", "dune-2021", times=())))
+    assert rc.scrape_cinemaclock("http://x")[1]["state"] == "suspicious"
+
+    def boom(url):
+        raise OSError("timed out")
+    monkeypatch.setattr(rc, "fetch_html", boom)
+    films, status = rc.scrape_cinemaclock("http://x")
+    assert films == [] and status["state"] == "failed" and "timed out" in status["reason"]
+
+
+# ── the Claude step reports why it failed ─────────────────────────────────────
+
+def _fake_anthropic(monkeypatch, text="[]", stop_reason="end_turn", error=None):
+    class Messages:
+        def create(self, **kwargs):
+            if error:
+                raise error
+            return types.SimpleNamespace(content=[types.SimpleNamespace(text=text)], stop_reason=stop_reason)
+    class Client:
+        def __init__(self, api_key):
+            self.messages = Messages()
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=Client))
+    monkeypatch.setattr(rc, "ANTHROPIC_API_KEY", "test-key")
+
+
+FILMS = [{"title": "Heat", "year": "1995"}]
+
+
+def test_missing_api_key_raises_with_reason(monkeypatch):
+    monkeypatch.setattr(rc, "ANTHROPIC_API_KEY", "")
+    with pytest.raises(rc.RecommendationError, match="ANTHROPIC_API_KEY"):
+        rc.get_recommendations(FILMS)
+
+
+def test_api_error_raises_with_reason(monkeypatch):
+    _fake_anthropic(monkeypatch, error=RuntimeError("model not found"))
+    with pytest.raises(rc.RecommendationError, match="Claude API error: model not found"):
+        rc.get_recommendations(FILMS)
+
+
+def test_truncated_reply_raises_with_reason(monkeypatch):
+    _fake_anthropic(monkeypatch, text='[{"title": "He', stop_reason="max_tokens")
+    with pytest.raises(rc.RecommendationError, match="max_tokens"):
+        rc.get_recommendations(FILMS)
+
+
+def test_invalid_json_raises_with_reason(monkeypatch):
+    _fake_anthropic(monkeypatch, text="Sure! Here are some films")
+    with pytest.raises(rc.RecommendationError, match="valid JSON"):
+        rc.get_recommendations(FILMS)
+
+
+def test_valid_reply_is_parsed_even_in_code_fences(monkeypatch):
+    _fake_anthropic(monkeypatch, text='```json\n[{"title": "Heat", "year": "1995", "reason": "r"}]\n```')
+    assert rc.get_recommendations(FILMS) == [{"title": "Heat", "year": "1995", "reason": "r"}]
+
+
+# ── main(): every failure path emails a reason and exits non-zero ─────────────
+
+import watchlist_checker
+
+
+def _showing(title, year):
+    return {"title": title, "year": year,
+            "showtimes": [{"date": date.today().isoformat(), "time": "7:30pm"}]}
+
+
+def _run_recs(monkeypatch, *, live=("Dune", "2021", "u"), zip_entries=(), live_error="HTTP 403",
+              statuses=None, recs=None, claude_error=None, send_result=True, films=None):
+    """Run recommendations.main() with everything external faked.
+    Returns (exit_status, [(subject, html), ...])."""
+    sent = []
+    statuses = statuses or {"Alpha Cinema": OK, "Beta Cinema": OK}
+    films = films if films is not None else [_showing("Dune", "2021"), _showing("Heat", "1995")]
+    recs = recs if recs is not None else [{"title": "Heat", "year": "1995", "reason": "Because."}]
+
+    def fetch_live(errors=None):
+        if live is None:
+            errors.append(live_error)
+            return None
+        return [live]
+    monkeypatch.setattr(watchlist_checker, "fetch_watchlist_page", fetch_live)
+    monkeypatch.setattr(rc, "fetch_watched_titles", lambda: set())
+    monkeypatch.setattr(rc, "load_letterboxd_export", lambda: (set(), list(zip_entries)))
+    monkeypatch.setattr(rc, "THEATRES", {"Alpha Cinema": "http://a", "Beta Cinema": "http://b"})
+    monkeypatch.setattr(rc, "THEATRE_HOMEPAGES", {"Alpha Cinema": "http://home-a", "Beta Cinema": "http://home-b"})
+    monkeypatch.setattr(rc, "scrape_cinemaclock",
+                        lambda url: (films, statuses["Alpha Cinema"]) if url == "http://a"
+                        else (films if statuses["Beta Cinema"]["state"] == "ok" else [], statuses["Beta Cinema"]))
+
+    def get_recs(eligible):
+        if claude_error:
+            raise rc.RecommendationError(claude_error)
+        return recs
+    monkeypatch.setattr(rc, "get_recommendations", get_recs)
+    monkeypatch.setattr(rc, "send_email", lambda subject, html: sent.append((subject, html)) or send_result)
+    return rc.main(), sent
+
+
+def test_recs_clean_run(monkeypatch):
+    status, sent = _run_recs(monkeypatch)
+    assert status == 0 and len(sent) == 1
+    subject, html = sent[0]
+    assert not subject.startswith("⚠") and "This run" not in html and "Heat" in html
+    assert "Not checked" not in html
+
+
+def test_recs_unavailable_watchlist_fails_the_run(monkeypatch):
+    status, sent = _run_recs(monkeypatch, live=None, live_error="HTTP 403 on page 1")
+    assert status == 1 and len(sent) == 1
+    subject, html = sent[0]
+    assert subject.startswith("⚠") and "run failed" in subject
+    assert "watchlist could not be loaded" in html and "HTTP 403 on page 1" in html
+    assert "Theatres checked" not in html
+
+
+def test_recs_zip_watchlist_fallback_warns_but_still_sends(monkeypatch):
+    status, sent = _run_recs(monkeypatch, live=None, zip_entries=[("Dune", "2021", "u")])
+    assert status == 0
+    subject, html = sent[0]
+    assert subject.startswith("⚠") and "export ZIP" in html and "HTTP 403" in html and "Heat" in html
+
+
+def test_recs_all_theatres_unreadable_fails_the_run(monkeypatch):
+    bad = {"state": "failed", "reason": "could not fetch the page (HTTP Error 404)"}
+    status, sent = _run_recs(monkeypatch, statuses={"Alpha Cinema": bad, "Beta Cinema": bad}, films=[])
+    assert status == 1 and "run failed" in sent[0][0]
+    assert "No films could be read from any theatre" in sent[0][1]
+    assert "Alpha Cinema: could not fetch the page" in sent[0][1]
+
+
+def test_recs_one_unreadable_theatre_is_flagged_and_exits_nonzero(monkeypatch):
+    bad = {"state": "failed", "reason": "could not fetch the page (HTTP Error 404)"}
+    status, sent = _run_recs(monkeypatch, statuses={"Alpha Cinema": OK, "Beta Cinema": bad})
+    assert status == 1 and len(sent) == 1
+    subject, html = sent[0]
+    assert subject.startswith("⚠") and "Heat" in html
+    assert "Beta Cinema: could not fetch the page" in html
+    assert "Not checked (see warning above):</b> Beta Cinema" in html
+
+
+def test_recs_claude_failure_is_emailed_with_reason(monkeypatch):
+    status, sent = _run_recs(monkeypatch, claude_error="Claude API error: model not found")
+    assert status == 1 and "run failed" in sent[0][0]
+    assert "model not found" in sent[0][1]
+
+
+def test_recs_empty_claude_reply_fails_the_run(monkeypatch):
+    status, sent = _run_recs(monkeypatch, recs=[])
+    assert status == 1 and "Claude returned no recommendations" in sent[0][1]
+
+
+def test_recs_picks_that_match_no_showing_fail_the_run(monkeypatch):
+    status, sent = _run_recs(monkeypatch, recs=[{"title": "Zzzzzz Qqqq", "year": "2001", "reason": "r"}])
+    assert status == 1 and "none matched a current showing" in sent[0][1]
+
+
+def test_recs_nothing_eligible_is_not_a_failure(monkeypatch):
+    status, sent = _run_recs(monkeypatch, films=[_showing("Dune", "2021")])
+    assert status == 0 and sent == []
+
+
+def test_recs_send_failure_exits_nonzero(monkeypatch):
+    status, _ = _run_recs(monkeypatch, send_result=False)
+    assert status == 1
