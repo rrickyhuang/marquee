@@ -51,8 +51,9 @@ if os.path.exists(_env_path):
                 os.environ.setdefault(_k.strip(), _v.strip())
 
 
-# Keys read when this script starts up; a missing one would otherwise surface as
-# a bare KeyError traceback.
+# Keys this script depends on, checked up front: a missing one would otherwise
+# surface as a bare KeyError traceback (for the recommendations.* keys, only after
+# every theatre has been scraped).
 _REQUIRED_CONFIG = (
     "letterboxd.username",
     "email.from",
@@ -61,6 +62,10 @@ _REQUIRED_CONFIG = (
     "taste_profile",
     "matching.exclude_threshold",
     "matching.recommendation_score",
+    "recommendations.min",
+    "recommendations.max",
+    "recommendations.model",
+    "recommendations.max_tokens",
 )
 _REQUIRED_THEATRE_KEYS = ("name", "cinemaclock_url", "homepage")
 

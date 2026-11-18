@@ -97,3 +97,28 @@ def test_theatres_must_be_a_list(module, config_dir, monkeypatch):
     monkeypatch.setattr(yaml, "safe_load", lambda f: cfg)
     with pytest.raises(ValueError, match="must be a list"):
         module.load_config()
+
+
+@pytest.mark.parametrize("key", ["min", "max", "model", "max_tokens"])
+def test_recommendations_keys_are_required_up_front(key, config_dir, monkeypatch):
+    # recommendations.py reads these only after scraping, so a gap must fail at load time.
+    cfg = copy.deepcopy(MINIMAL_CFG)
+    del cfg["recommendations"][key]
+    monkeypatch.setattr(yaml, "safe_load", lambda f: cfg)
+    with pytest.raises(ValueError, match=rf"recommendations\.{key}"):
+        recommendations.load_config()
+
+
+def test_missing_recommendations_block_is_named(config_dir, monkeypatch):
+    cfg = copy.deepcopy(MINIMAL_CFG)
+    del cfg["recommendations"]
+    monkeypatch.setattr(yaml, "safe_load", lambda f: cfg)
+    with pytest.raises(ValueError, match=r"recommendations\.min.*recommendations\.max_tokens"):
+        recommendations.load_config()
+
+
+def test_watchlist_checker_does_not_require_recommendations_settings(config_dir, monkeypatch):
+    cfg = copy.deepcopy(MINIMAL_CFG)
+    del cfg["recommendations"]
+    monkeypatch.setattr(yaml, "safe_load", lambda f: cfg)
+    assert watchlist_checker.load_config()["location"] == "Test City"
