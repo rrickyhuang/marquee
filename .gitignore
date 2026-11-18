@@ -13,7 +13,6 @@
 !config.example.yaml
 !.env.example
 !conftest.py
-!test_recommendations.py
 !test_schedule.py
 !schedule_settings.py
 !test_email_html.py
