@@ -11,6 +11,7 @@
 !run_watchlist_checker.bat
 !requirements.txt
 !config.example.yaml
+!test_matching.py
 !.env.example
 !conftest.py
 !test_schedule.py
