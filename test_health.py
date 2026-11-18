@@ -165,7 +165,7 @@ def test_no_live_and_no_zip_is_an_empty_watchlist_with_reason(monkeypatch):
 
 def test_empty_watchlist_sends_failure_email_and_exits_nonzero(monkeypatch):
     sent = []
-    monkeypatch.setattr(wc, "load_watched_titles", lambda: set())
+    monkeypatch.setattr(wc, "load_watched_titles", lambda: (set(), ""))
     monkeypatch.setattr(wc, "load_watchlist", lambda: ([], {"source": "none", "count": 0, "zip_age_days": None, "reason": "it broke"}))
     monkeypatch.setattr(wc, "scrape_cinemaclock", lambda url: pytest.fail("must not scrape without a watchlist"))
     monkeypatch.setattr(wc, "THEATRES", {"A": "http://a"})
@@ -176,3 +176,95 @@ def test_empty_watchlist_sends_failure_email_and_exits_nonzero(monkeypatch):
     assert "run failed" in subject and subject.startswith("⚠")
     assert "it broke" in html
     assert "Theatres checked" not in html
+
+
+# ── main(): degraded runs are visible in the email and the exit status ────────
+
+LIVE = {"source": "live", "count": 1, "zip_age_days": None, "reason": ""}
+OK = {"state": "ok", "reason": ""}
+
+
+def _run_main(monkeypatch, statuses, watchlist_info=LIVE, watched_note="", send_result=True):
+    """Run main() against two fake theatres; returns (exit_status, [(subject, html), ...])."""
+    sent = []
+    film = {"title": "Dune", "year": "2021", "runtime": "", "url": "x",
+            "showtimes": [{"date": date.today().isoformat(), "time": "7:30pm"}]}
+    other = {**film, "title": "Heat", "year": "1995"}  # not on the watchlist → "everything playing" email
+    scrapes = {
+        url: ([film, other], st) if st["state"] == "ok" else ([], st)
+        for url, st in (("http://a", statuses["A"]), ("http://b", statuses["B"]))
+    }
+    monkeypatch.setattr(wc, "load_watched_titles", lambda: (set(), watched_note))
+    monkeypatch.setattr(wc, "load_watchlist", lambda: ([("Dune", "2021", "https://letterboxd.com/film/dune-2021/")], watchlist_info))
+    monkeypatch.setattr(wc, "scrape_cinemaclock", lambda url: scrapes[url])
+    monkeypatch.setattr(wc, "THEATRES", {"Alpha Cinema": "http://a", "Beta Cinema": "http://b"})
+    monkeypatch.setattr(wc, "THEATRE_HOMEPAGES", {"Alpha Cinema": "http://home-a", "Beta Cinema": "http://home-b"})
+    monkeypatch.setattr(wc, "send_email", lambda subject, html: sent.append((subject, html)) or send_result)
+    status = wc.main()
+    return status, sent
+
+
+def _statuses(a=OK, b=OK):
+    return {"A": a, "B": b}
+
+
+def test_clean_run_has_no_warning_and_exits_zero(monkeypatch):
+    status, sent = _run_main(monkeypatch, _statuses())
+    assert status == 0
+    subject, html = sent[0]
+    assert not subject.startswith("⚠")
+    assert "This run had problems" not in html and "Heads up" not in html
+    assert "Alpha Cinema" in html and "Beta Cinema" in html
+    assert "Not checked" not in html
+
+
+def test_failed_theatre_is_flagged_everywhere_and_exits_nonzero(monkeypatch):
+    failed = {"state": "failed", "reason": "could not fetch the page (HTTP Error 404)"}
+    status, sent = _run_main(monkeypatch, _statuses(b=failed))
+    assert status == 1
+    for subject, html in sent:                      # digest and all-films email
+        assert subject.startswith("⚠")
+        assert "This run had problems" in html
+        assert "Beta Cinema: could not fetch the page (HTTP Error 404)" in html
+        assert "Not checked (see warning above):</b> Beta Cinema" in html
+        assert 'href="http://b"' not in html        # not listed as a checked theatre
+        assert 'href="http://a"' in html
+    assert len(sent) == 2
+
+
+def test_suspicious_theatre_also_counts_as_a_problem(monkeypatch):
+    odd = {"state": "suspicious", "reason": "no film listings found on the page"}
+    status, sent = _run_main(monkeypatch, _statuses(a=odd))
+    assert status == 1 and "no film listings found" in sent[0][1]
+
+
+def test_recent_zip_fallback_warns_but_exits_zero(monkeypatch):
+    info = {"source": "zip", "count": 1, "zip_age_days": 3, "reason": "the live watchlist scrape failed (HTTP 403)"}
+    status, sent = _run_main(monkeypatch, _statuses(), watchlist_info=info)
+    assert status == 0
+    subject, html = sent[0]
+    assert subject.startswith("⚠") and "Heads up" in html
+    assert "export ZIP (3 day(s) old)" in html and "HTTP 403" in html
+
+
+def test_stale_zip_fallback_exits_nonzero(monkeypatch):
+    info = {"source": "zip", "count": 1, "zip_age_days": 30, "reason": "the live watchlist scrape failed (HTTP 403)"}
+    status, sent = _run_main(monkeypatch, _statuses(), watchlist_info=info)
+    assert status == 1 and "30 day(s) old" in sent[0][1]
+
+
+def test_watched_titles_note_is_a_notice(monkeypatch):
+    status, sent = _run_main(monkeypatch, _statuses(), watched_note="Recent watches could not be loaded")
+    assert status == 0
+    assert sent[0][0].startswith("⚠") and "Recent watches could not be loaded" in sent[0][1]
+
+
+def test_email_send_failure_exits_nonzero(monkeypatch):
+    status, _ = _run_main(monkeypatch, _statuses(), send_result=False)
+    assert status == 1
+
+
+def test_health_arguments_are_optional():
+    html = wc.build_email_html({}, {"Alpha Cinema": "http://home-a"})
+    assert "This run had problems" not in html and "Heads up" not in html
+    assert "Alpha Cinema" in html

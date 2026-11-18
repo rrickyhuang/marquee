@@ -237,7 +237,8 @@ def load_watchlist():
 
 
 def load_watched_titles():
-    """Return a set of normalized watched titles.
+    """Return (watched, note): a set of normalized watched titles, and a note
+    ("" when all sources loaded) saying what was unavailable.
 
     ZIP is the primary source (full history). The activity RSS
     (diary entries at /username/rss/) patches in recent watches not yet
@@ -245,6 +246,7 @@ def load_watched_titles():
     Cloudflare-blocked.
     """
     watched_norms, _ = load_letterboxd_export()
+    note = ""
     try:
         xml = fetch_html(LETTERBOXD_ACTIVITY_RSS)
         for item_m in re.finditer(r"<item>(.*?)</item>", xml, re.DOTALL):
@@ -254,7 +256,8 @@ def load_watched_titles():
                 watched_norms.add(normalize(title_m.group(1).strip()))
     except Exception as e:
         print(f"  Warning: could not fetch activity RSS ({e}); using ZIP only")
-    return watched_norms
+        note = f"Recent watches couldn't be loaded from Letterboxd ({e}), so the \"already watched\" tags use the export ZIP only."
+    return watched_norms, note
 
 
 # ── LETTERBOXD URL ────────────────────────────────────────────────────────────
@@ -812,15 +815,60 @@ def _minify_html(html):
     return re.sub(r">\s+<", "><", html).strip()
 
 
-def _wrap_email(subhead_label, body_html, theatre_urls):
-    """Shared Marquee shell (proscenium, lit board, footer) around a body."""
+def collect_health(theatre_status, watchlist_info, watched_note=""):
+    """Summarise a run's problems for the email banner and the exit status.
+
+    Returns {"errors": [...], "notices": [...], "unchecked": {theatre: reason}}.
+    Errors mean the digest can't be fully trusted (and make the run exit
+    non-zero); notices are worth knowing but don't.
+    """
+    errors, notices = [], []
+    unchecked = {}
+    for name, st in theatre_status.items():
+        if st["state"] != "ok":
+            errors.append(f"{name}: {st['reason']}")
+            unchecked[name] = st["reason"]
+    if watchlist_info["source"] == "zip":
+        age = watchlist_info["zip_age_days"]
+        msg = (f"The watchlist came from an export ZIP ({age} day(s) old) because "
+               f"{watchlist_info['reason']}; recent additions and removals may be missing.")
+        (errors if age >= STALE_ZIP_DAYS else notices).append(msg)
+    if watched_note:
+        notices.append(watched_note)
+    return {"errors": errors, "notices": notices, "unchecked": unchecked}
+
+
+def _health_banner(health):
+    """Visible warning block for the top of an email; empty when the run was clean."""
+    if not health or not (health["errors"] or health["notices"]):
+        return ""
+    items = "".join(f"<li>{escape(m)}</li>" for m in health["errors"] + health["notices"])
+    headline = "This run had problems — treat the results below as incomplete." if health["errors"] \
+        else "Heads up about this run:"
+    return (
+        '<div style="border:2px solid #b3261e;background:#fdecea;color:#5c1a14;'
+        'padding:10px 14px;margin:0 0 18px;font-size:13px;line-height:1.45;">'
+        f'<b>⚠ {headline}</b><ul style="margin:6px 0 0 18px;padding:0;">{items}</ul></div>'
+    )
+
+
+def _wrap_email(subhead_label, body_html, theatre_urls, health=None):
+    """Shared Marquee shell (proscenium, lit board, footer) around a body.
+
+    health (from collect_health) adds a warning banner above the body and keeps
+    theatres that couldn't be read out of the "Theatres checked" list.
+    """
+    unchecked = (health or {}).get("unchecked", {})
     today_str = datetime.now().strftime("%B %d, %Y")
     bulb_row = ('<span class="fbulb"></span>' * 9)
     theatre_list = " · ".join(
         f'<a href="{url}">{escape(name)}</a>'
         for name, url in theatre_urls.items()
+        if name not in unchecked
     )
     theatres_line = f"Theatres checked: {theatre_list}<br>" if theatre_list else ""
+    if unchecked:
+        theatres_line += f"<b>Not checked (see warning above):</b> {escape(', '.join(unchecked))}<br>"
     html = f"""
     <html><head>
     <meta name="color-scheme" content="light">
@@ -838,7 +886,7 @@ def _wrap_email(subhead_label, body_html, theatre_urls):
         <p class="datestamp">{today_str}</p>
       </div>
       <div class="content">
-        {body_html}
+        {_health_banner(health)}{body_html}
         <div class="divider"></div>
         <div class="popcorn-wrap" aria-hidden="true"><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span><span class="popcorn-stripe white"></span><span class="popcorn-stripe red"></span></div>
         <p class="footer-stars">★ ★ ★</p>
@@ -858,7 +906,7 @@ def _log_size(label, html):
     print(f"  {label} email size: {size / 1024:.0f} KB (Gmail clips at ~102 KB)")
 
 
-def build_email_html(entries_by_date, theatre_urls):
+def build_email_html(entries_by_date, theatre_urls, health=None):
     """Build the watchlist digest email, grouped by day.
 
     entries_by_date: {
@@ -899,12 +947,12 @@ def build_email_html(entries_by_date, theatre_urls):
                     tag_html = '<span class="tag">Rewatch</span>' if f.get("watched") else ""
                     body += _render_ticket(f, "uncertain", "Possible Match", "Verify", tag_html)
 
-    html = _wrap_email("Watchlist Digest", body, theatre_urls)
+    html = _wrap_email("Watchlist Digest", body, theatre_urls, health)
     _log_size("Watchlist", html)
     return html
 
 
-def build_all_films_html(other_by_date, theatre_urls, max_bytes=GMAIL_BUDGET_BYTES):
+def build_all_films_html(other_by_date, theatre_urls, max_bytes=GMAIL_BUDGET_BYTES, health=None):
     """Build the "everything playing" email, grouped by film (each film appears
     once with every theatre/day/time underneath). If it would exceed max_bytes,
     already-watched films are dropped, with a note saying so.
@@ -919,7 +967,7 @@ def build_all_films_html(other_by_date, theatre_urls, max_bytes=GMAIL_BUDGET_BYT
         body = '<h2 class="section-head">All Films Playing This Week</h2>' + note
         if not films:
             body += '<p class="no-matches">Nothing listed for this week.</p>'
-        return _wrap_email("All Films Playing", body + "".join(_render_other_row(f) for f in films), theatre_urls)
+        return _wrap_email("All Films Playing", body + "".join(_render_other_row(f) for f in films), theatre_urls, health)
 
     html = render(grouped)
     if len(html.encode("utf-8")) > max_bytes:
@@ -982,7 +1030,7 @@ def main():
     total_matches = 0
 
     print("\nFetching watched titles...")
-    watched_norms = load_watched_titles()
+    watched_norms, watched_note = load_watched_titles()
     print(f"  {len(watched_norms)} watched films (ZIP + activity RSS)")
 
     watchlist, watchlist_info = load_watchlist()
@@ -1101,21 +1149,29 @@ def main():
 
     # Build and send email
     span = f"next {LOOKAHEAD_DAYS} days" if LOOKAHEAD_DAYS != 1 else "next day"
+    health = collect_health(theatre_status, watchlist_info, watched_note)
+    flag = "⚠ " if (health["errors"] or health["notices"]) else ""
     subject = (
-        f"🎬 Marquee: {total_matches} watchlist film(s) playing the {span} — {LOCATION}"
+        f"{flag}🎬 Marquee: {total_matches} watchlist film(s) playing the {span} — {LOCATION}"
         if total_matches
-        else f"🎬 Marquee: no watchlist matches the {span} — {LOCATION}"
+        else f"{flag}🎬 Marquee: no watchlist matches the {span} — {LOCATION}"
     )
-    html = build_email_html(dict(entries_by_date), THEATRES)
-    send_email(subject, html)
+    for msg in health["errors"] + health["notices"]:
+        print(f"  ⚠ {msg}")
+    html = build_email_html(dict(entries_by_date), THEATRES, health)
+    sent_ok = [send_email(subject, html)]
 
     # Second, separate email for the full listing — kept apart so the watchlist
     # digest stays well under Gmail's clipping size.
     if other_by_date:
-        all_films_subject = f"🎬 Marquee: everything playing the {span} — {LOCATION}"
-        send_email(all_films_subject, build_all_films_html(dict(other_by_date), THEATRES))
+        all_films_subject = f"{flag}🎬 Marquee: everything playing the {span} — {LOCATION}"
+        sent_ok.append(send_email(all_films_subject, build_all_films_html(dict(other_by_date), THEATRES, health=health)))
 
     print(f"\nDone. {total_matches} confirmed match(es) across all theatres.\n")
+    if health["errors"] or not all(sent_ok):
+        print("Finished with problems (see warnings above) — exiting with status 1.")
+        return 1
+    return 0
 
 
 def register_scheduled_task():
