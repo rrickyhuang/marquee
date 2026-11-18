@@ -349,14 +349,35 @@ def extract_dated_showtimes(block, today, stats=None):
     return showtimes
 
 
-def scrape_cinemaclock(url):
-    """Return list of {title, year, showtimes, url} dicts from a CinemaClock theatre page.
+def scrape_cinemaclock(url, attempts=2, retry_delay=2):
+    """Scrape a CinemaClock theatre page. Returns (films, status).
 
-    showtimes is a list of {date: 'YYYY-MM-DD', time: 'H:MM'} dicts.
+    films is a list of {title, year, showtimes, url} dicts; showtimes is a list
+    of {date: 'YYYY-MM-DD', time: 'H:MM'} dicts.
+
+    status is {"state": "ok" | "failed" | "suspicious", "reason": str}, so an
+    unreadable theatre isn't mistaken for a quiet week:
+      failed      the page couldn't be fetched (after `attempts` tries) or parsed
+      suspicious  it loaded but looks wrong: no film listings, listings with no
+                  readable showtimes, or showtimes dropped for unreadable dates
     """
+    html, error = None, None
+    for attempt in range(1, attempts + 1):
+        try:
+            html = fetch_html(url)
+            break
+        except Exception as e:
+            error = e
+            if attempt < attempts:
+                print(f"  Fetch failed ({e}); retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+    if html is None:
+        print(f"  Error scraping {url}: {error}")
+        return [], {"state": "failed", "reason": f"could not fetch the page ({error})"}
+
     try:
         today = date.today()
-        html = fetch_html(url)
+        date_stats = {}
         films = []
         blocks = re.split(r'(?=<div[^>]+class="showtimeblock movie)', html)
         for block in blocks:
@@ -395,7 +416,7 @@ def scrape_cinemaclock(url):
                 if rt:
                     runtime = f"{rt.group(1)}h{rt.group(2)}m" if rt.group(1) else f"{rt.group(2)}m"
 
-            showtimes = extract_dated_showtimes(block, today)
+            showtimes = extract_dated_showtimes(block, today, date_stats)
             films.append({
                 "title": title,
                 "year": year,
@@ -403,10 +424,28 @@ def scrape_cinemaclock(url):
                 "showtimes": showtimes,
                 "url": movie_url,
             })
-        return films
     except Exception as e:
         print(f"  Error scraping {url}: {e}")
-        return []
+        return [], {"state": "failed", "reason": f"could not parse the page ({e})"}
+
+    reasons = []
+    if not films:
+        reasons.append("no film listings found on the page (layout change, or a wrong theatre URL?)")
+    elif not any(f["showtimes"] for f in films):
+        reasons.append(f"{len(films)} film(s) listed but no showtimes could be read")
+    dropped = date_stats.get("unparsed_headers", 0), date_stats.get("undated_showtimes", 0)
+    if dropped[1]:
+        reasons.append(
+            f"{dropped[1]} showtime(s) skipped because their date header "
+            + ("was unreadable" if dropped[0] else "was missing")
+        )
+    if reasons:
+        status = {"state": "suspicious", "reason": "; ".join(reasons)}
+        print(f"  ! {status['reason']}")
+        return films, status
+    return films, {"state": "ok", "reason": ""}
+
+
 
 
 # ── MATCHING ──────────────────────────────────────────────────────────────────
@@ -919,9 +958,10 @@ def main():
 
     watchlist = load_watchlist()
 
+    theatre_status = {}  # theatre name → {"state", "reason"} from scrape_cinemaclock
     for theatre_name, url in THEATRES.items():
         print(f"\nScraping: {theatre_name}...")
-        scraped = scrape_cinemaclock(url)
+        scraped, theatre_status[theatre_name] = scrape_cinemaclock(url)
         print(f"  Found {len(scraped)} films listed")
 
         matches, uncertain = match_against_watchlist(scraped, watchlist)
