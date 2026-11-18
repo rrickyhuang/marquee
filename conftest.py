@@ -23,7 +23,7 @@ MINIMAL_CFG = {
     "recommendations": {
         "min": 2,
         "max": 6,
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "max_tokens": 512,
         "schedule_days": 1,
         "schedule_time": "21:00",
