@@ -307,17 +307,18 @@ def parse_relative_date(text, today):
         return today
     if lower == "tomorrow":
         return today + timedelta(days=1)
-    # Try various abbreviated/full formats like "Mar 18", "Fri Mar 21", "Friday March 21"
+    text = re.sub(r"\bSept\b", "Sep", text, flags=re.IGNORECASE)  # %b only knows "Sep"
+    # Formats like "Mar 18", "Fri Mar 21", "Friday March 21". Parsed with an explicit
+    # year (a yearless strptime assumes 1900, which has no Feb 29); a date more than
+    # 60 days in the past is taken to be next year's.
     for fmt in ("%b %d", "%B %d", "%a %b %d", "%A %b %d", "%a %B %d", "%A %B %d"):
-        try:
-            d = datetime.strptime(text, fmt)
-            candidate = d.replace(year=today.year).date()
-            # If the date is more than 60 days in the past, assume it rolled to next year
-            if (candidate - today).days < -60:
-                candidate = d.replace(year=today.year + 1).date()
-            return candidate
-        except ValueError:
-            continue
+        for year in (today.year, today.year + 1):
+            try:
+                candidate = datetime.strptime(f"{text} {year}", f"{fmt} %Y").date()
+            except ValueError:
+                continue
+            if (candidate - today).days >= -60:
+                return candidate
     return None
 
 

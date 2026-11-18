@@ -484,3 +484,26 @@ def test_recs_nothing_eligible_send_failure_exits_nonzero(monkeypatch):
 def test_recs_send_failure_exits_nonzero(monkeypatch):
     status, _ = _run_recs(monkeypatch, send_result=False)
     assert status == 1
+
+
+# ── parse_relative_date: dates the old yearless parse couldn't read ───────────
+
+@pytest.mark.parametrize("module", [wc, rc])
+@pytest.mark.parametrize("today,text,expected", [
+    (date(2028, 2, 20), "Feb 29", date(2028, 2, 29)),         # leap day
+    (date(2027, 12, 20), "Feb 29", date(2028, 2, 29)),        # leap day, next year
+    (date(2028, 2, 20), "Thu Feb 29", date(2028, 2, 29)),
+    (date(2028, 2, 20), "Sept 4", date(2028, 9, 4)),          # "Sept" as well as "Sep"
+    (date(2028, 2, 20), "SEPT 4", date(2028, 9, 4)),
+    (date(2026, 3, 18), "Jan 17", date(2026, 1, 17)),         # exactly 60 days back stays this year
+    (date(2026, 3, 18), "Jan 16", date(2027, 1, 16)),         # 61 days back rolls to next year
+    (date(2026, 12, 20), "Jan 5", date(2027, 1, 5)),
+])
+def test_parse_relative_date_handles_leap_day_and_sept(module, today, text, expected):
+    assert module.parse_relative_date(text, today) == expected
+
+
+@pytest.mark.parametrize("module", [wc, rc])
+def test_parse_relative_date_rejects_impossible_dates(module):
+    assert module.parse_relative_date("Feb 29", date(2026, 2, 20)) is None   # 2026 and 2027 aren't leap years
+    assert module.parse_relative_date("Smarch 40", date(2026, 3, 18)) is None
