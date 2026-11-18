@@ -54,15 +54,60 @@ if os.path.exists(_env_path):
                 os.environ.setdefault(_k.strip(), _v.strip())
 
 
+# Keys read when this script starts up; a missing one would otherwise surface as
+# a bare KeyError traceback.
+_REQUIRED_CONFIG = (
+    "letterboxd.username",
+    "email.from",
+    "email.to",
+    "theatres",
+    "matching.threshold",
+    "matching.uncertain_floor",
+    "watchlist.lookahead_days",
+)
+_REQUIRED_THEATRE_KEYS = ("name", "cinemaclock_url", "homepage")
+
+
+def _validate_config(cfg):
+    """Raise a ValueError naming whatever is missing from config.yaml."""
+    hint = "See config.example.yaml for the expected layout."
+    if not isinstance(cfg, dict):
+        raise ValueError(f"config.yaml is empty or not a mapping of settings. {hint}")
+    missing = []
+    for path in _REQUIRED_CONFIG:
+        node = cfg
+        for part in path.split("."):
+            if not isinstance(node, dict) or node.get(part) is None:
+                missing.append(path)
+                break
+            node = node[part]
+    theatres = cfg.get("theatres")
+    if theatres is not None and not isinstance(theatres, list):
+        raise ValueError(f"config.yaml: 'theatres' must be a list. {hint}")
+    for i, t in enumerate(theatres or [], start=1):
+        for key in _REQUIRED_THEATRE_KEYS:
+            if not isinstance(t, dict) or t.get(key) is None:
+                missing.append(f"theatres[{i}].{key}")
+    if missing:
+        raise ValueError(f"config.yaml is missing required setting(s): {', '.join(missing)}. {hint}")
+
+
 def load_config():
     config_path = os.path.join(_script_dir, "config.yaml")
     try:
         with open(config_path, encoding="utf-8") as f:
-            return yaml.safe_load(f)
+            cfg = yaml.safe_load(f)
     except FileNotFoundError:
         raise FileNotFoundError(
             "config.yaml not found. Copy config.example.yaml to config.yaml and fill in your values."
         )
+    except yaml.YAMLError as e:
+        raise ValueError(
+            f"config.yaml is not valid YAML: {e}\n"
+            "Compare it with config.example.yaml."
+        ) from e
+    _validate_config(cfg)
+    return cfg
 
 
 _cfg = load_config()
