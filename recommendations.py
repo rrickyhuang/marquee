@@ -22,9 +22,9 @@ import io
 import re
 import smtplib
 import sys
-import unicodedata
 import urllib.parse
 import urllib.request
+import unicodedata
 import zipfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta
