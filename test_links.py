@@ -18,6 +18,11 @@ MODULES = [watchlist_checker, recommendations]
     ("Schindler’s List", "schindlers-list"),
     ("Mission: Impossible 2", "mission-impossible-2"),
     ("Whiplash!", "whiplash"),
+    ("Am\u00e9lie", "amelie"),                  # accents fold to ASCII, as in Letterboxd's slugs
+    ("Cl\u00e9o from 5 to 7", "cleo-from-5-to-7"),
+    ("The Anniversary Party", "the-anniversary-party"),   # event words only count as a suffix
+    ("Anniversary", "anniversary"),
+    ("Encore", "encore"),
 ])
 def test_ordinary_titles_keep_the_slug_url(module, title, slug):
     assert module.lb_film_url(title, "2020") == f"https://letterboxd.com/film/{slug}/"
@@ -25,12 +30,13 @@ def test_ordinary_titles_keep_the_slug_url(module, title, slug):
 
 @pytest.mark.parametrize("module", MODULES)
 @pytest.mark.parametrize("title", [
-    "Amélie",                  # non-ASCII: Letterboxd slugs are ASCII
+    "Ørnen",                      # letters that don't fold to ASCII
     "Alien³",
     "Nosferatu (1922)",           # parentheses
     "Toy Story 3D",               # format suffix
     "The Matrix IMAX",
     "Jaws Q&A",
+    "Jaws Q&A with the Director",
     "Back to the Future 40th Anniversary",
     "Casablanca - Dolby Atmos",
 ])

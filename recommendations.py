@@ -22,6 +22,7 @@ import io
 import re
 import smtplib
 import sys
+import unicodedata
 import urllib.parse
 import urllib.request
 import zipfile
@@ -281,31 +282,42 @@ def scrape_cinemaclock(url):
 # ── LETTERBOXD URL ─────────────────────────────────────────────────────────────
 
 def slugify(title):
-    t = title.lower()
+    t = _fold_accents(title).lower()
     t = re.sub(r"[^\w\s-]", "", t)
     t = re.sub(r"[\s_]+", "-", t)
     t = re.sub(r"-+", "-", t)
     return t.strip("-")
 
 
-# Characters a Letterboxd slug is built from reliably; anything else (accents,
-# parentheses, symbols...) makes the guessed slug unlikely to match a real film.
+def _fold_accents(text):
+    """Strip accents ("Amélie" -> "Amelie"); Letterboxd slugs are ASCII."""
+    return "".join(c for c in unicodedata.normalize("NFD", text) if not unicodedata.combining(c))
+
+
+# Characters a Letterboxd slug is built from reliably; anything else left after
+# folding accents (parentheses, symbols, letters like "ø" or "³") makes the guessed
+# slug unlikely to match a real film.
 _SLUG_SAFE_TITLE = re.compile(r"[A-Za-z0-9\s'\u2019.,:;!?&-]+")
-# CinemaClock appends format/event wording that is not part of the film's title.
+# CinemaClock appends format/event wording ("... 3D", "... 40th Anniversary",
+# "... Dolby Atmos"), so it only counts near the end of the title. Bare words that
+# are also real titles ("Anniversary", "Encore") are deliberately not listed.
 _EVENT_SUFFIX = re.compile(
-    r"\b(?:3D|IMAX|4DX|ScreenX|Dolby|D-BOX|Q\s*&\s*A|Sing-?Along|Anniversary|Encore)\b", re.IGNORECASE
+    r"\b(?:3D|IMAX|4DX|ScreenX|Dolby|D-BOX|Q\s*&\s*A|Sing-?Along|\d+(?:st|nd|rd|th)\s+Anniversary)\b"
+    r"(?:\W+\w+){0,3}\W*$",
+    re.IGNORECASE,
 )
 
 
 def _slug_is_reliable(title):
     """Whether slugify(title) is likely to be the film's real Letterboxd slug."""
-    return bool(_SLUG_SAFE_TITLE.fullmatch(title)) and not _EVENT_SUFFIX.search(title)
+    folded = _fold_accents(title)
+    return bool(_SLUG_SAFE_TITLE.fullmatch(folded)) and not _EVENT_SUFFIX.search(folded)
 
 
 def lb_film_url(title, year=""):
     """Slug-based Letterboxd film URL for ordinary titles; a search URL when the
-    title is empty or its slug would be a guess (non-ASCII, unusual punctuation,
-    or format/event wording like "3D" or "Q&A")."""
+    title is empty or its slug would be a guess (letters that don't fold to ASCII,
+    unusual punctuation, or trailing format/event wording like "3D" or "Q&A")."""
     slug = slugify(title)
     if slug and _slug_is_reliable(title):
         return f"https://letterboxd.com/film/{slug}/"
