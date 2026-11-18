@@ -125,6 +125,16 @@ def similarity(a, b):
     return SequenceMatcher(None, normalize(a), normalize(b)).ratio()
 
 
+def ratio_at_least(a, b, threshold):
+    """Same result as SequenceMatcher(None, a, b).ratio() >= threshold, but skips the
+    full comparison when the cheap upper bounds (length, then character counts)
+    already fall below the threshold."""
+    s = SequenceMatcher(None, a, b)
+    return (s.real_quick_ratio() >= threshold
+            and s.quick_ratio() >= threshold
+            and s.ratio() >= threshold)
+
+
 # ── LETTERBOXD EXPORT ─────────────────────────────────────────────────────────
 
 def load_letterboxd_export():
@@ -666,10 +676,7 @@ def main():
         norm = normalize(title)
         if norm in exclude_norms:
             return True
-        return any(
-            SequenceMatcher(None, norm, ex).ratio() >= EXCLUDE_THRESHOLD
-            for ex in exclude_norms
-        )
+        return any(ratio_at_least(norm, ex, EXCLUDE_THRESHOLD) for ex in exclude_norms)
 
     # 2. Scrape theatres, merge into unique-film dict
     print("\nScraping theatres...")
