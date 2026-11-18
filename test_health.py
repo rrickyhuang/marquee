@@ -459,9 +459,26 @@ def test_recs_picks_that_match_no_showing_fail_the_run(monkeypatch):
     assert status == 1 and "none matched a current showing" in sent[0][1]
 
 
-def test_recs_nothing_eligible_is_not_a_failure(monkeypatch):
+def test_recs_nothing_eligible_sends_a_short_note_and_is_not_a_failure(monkeypatch):
     status, sent = _run_recs(monkeypatch, films=[_showing("Dune", "2021")])
-    assert status == 0 and sent == []
+    assert status == 0 and len(sent) == 1
+    subject, html = sent[0]
+    assert "nothing new to recommend" in subject and not subject.startswith("⚠")
+    assert "already on your watchlist or watched list" in html
+    assert "This run" not in html and "No recommendations this month" not in html
+
+
+def test_recs_nothing_eligible_still_flags_unreadable_theatres(monkeypatch):
+    bad = {"state": "failed", "reason": "could not fetch the page (HTTP Error 404)"}
+    status, sent = _run_recs(monkeypatch, films=[_showing("Dune", "2021")],
+                             statuses={"Alpha Cinema": OK, "Beta Cinema": bad})
+    assert status == 1 and len(sent) == 1
+    assert sent[0][0].startswith("⚠") and "Beta Cinema: could not fetch the page" in sent[0][1]
+
+
+def test_recs_nothing_eligible_send_failure_exits_nonzero(monkeypatch):
+    status, _ = _run_recs(monkeypatch, films=[_showing("Dune", "2021")], send_result=False)
+    assert status == 1
 
 
 def test_recs_send_failure_exits_nonzero(monkeypatch):

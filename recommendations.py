@@ -560,11 +560,12 @@ def _warning_banner(warnings, failed=False):
     )
 
 
-def build_reco_email(recs_by_date, warnings=None, failed=False, unchecked=()):
+def build_reco_email(recs_by_date, warnings=None, failed=False, unchecked=(), empty_note=None):
     """HTML email — recommendations grouped by day, then cinema.
 
     warnings adds a banner at the top (failed=True words it as a failed run);
-    theatres named in `unchecked` are left out of the "Theatres checked" footer.
+    theatres named in `unchecked` are left out of the "Theatres checked" footer;
+    empty_note replaces the default text shown when there are no recommendations.
     """
     today_str = datetime.now().strftime("%B %d, %Y")
     has_any = any(bool(v) for v in recs_by_date.values())
@@ -597,7 +598,7 @@ def build_reco_email(recs_by_date, warnings=None, failed=False, unchecked=()):
     if failed:
         pass
     elif not has_any:
-        html += '<p class="no-matches">No recommendations this month.</p>'
+        html += f'<p class="no-matches">{escape(empty_note or "No recommendations this month.")}</p>'
     else:
         for date_str in sorted(recs_by_date):
             films = recs_by_date[date_str]
@@ -823,7 +824,14 @@ def main():
 
     if not eligible:
         print("No eligible films — nothing to recommend.")
-        return 1 if theatre_problems else 0
+        sent = send_email(
+            f"{'⚠ ' if warnings else ''}🎬 Marquee: nothing new to recommend this month — {LOCATION} theatres",
+            build_reco_email(
+                {}, warnings=warnings, unchecked=tuple(theatre_problems),
+                empty_note="Nothing is playing right now that isn't already on your watchlist or watched list.",
+            ),
+        )
+        return 1 if (theatre_problems or not sent) else 0
 
     # 4. Ask Claude
     print("\nAsking Claude for recommendations...")
