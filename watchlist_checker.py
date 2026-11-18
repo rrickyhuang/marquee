@@ -23,6 +23,7 @@ import re
 import smtplib
 import sys
 import time
+import unicodedata
 import urllib.request
 import zipfile
 from collections import defaultdict
@@ -416,6 +417,23 @@ def similarity(a, b):
     return SequenceMatcher(None, normalize(a), normalize(b)).ratio()
 
 
+def _title_words(title):
+    """Normalized, accent-folded words of a title ("Amélie" and "Amelie" agree)."""
+    folded = unicodedata.normalize("NFD", normalize(title))
+    return set("".join(c for c in folded if not unicodedata.combining(c)).split())
+
+
+def shares_enough_words(a, b):
+    """Whether two titles share whole words covering more than half of the shorter
+    title. SequenceMatcher scores unrelated short titles highly on common
+    substrings ("Toy Story 5" vs "Tokyo Story", "Crossing" vs "Crashing"); a real
+    match shares most of its words, however the rest differs."""
+    wa, wb = _title_words(a), _title_words(b)
+    if not wa or not wb:
+        return False
+    return len(wa & wb) / min(len(wa), len(wb)) > 0.5
+
+
 def years_compatible(a, b, tolerance=1):
     """False only when both years are known and differ by more than tolerance
     (a same-titled remake or a different film). Unknown years never conflict;
@@ -432,6 +450,10 @@ YEAR_CONFLICT_MIN_SCORE = 0.95  # a year-conflicting candidate must be a near-ex
 def match_against_watchlist(scraped_films, watchlist):
     """watchlist items are (title, year, lb_url) triples.
 
+    Below the confident threshold a candidate must also share whole words with the
+    showing (see shares_enough_words); a high character-level score alone isn't
+    enough to surface a possible match.
+
     A candidate whose year conflicts with the showing's is usually a remake or
     unrelated film, so it only survives as a near-exact title match and is then
     never "confident" — only surfaced as a possible match. (CinemaClock's year is
@@ -447,6 +469,8 @@ def match_against_watchlist(scraped_films, watchlist):
             year_ok = years_compatible(film.get("year"), entry[1] if len(entry) > 1 else "")
             score = similarity(film["title"], entry[0])
             if not year_ok and score < YEAR_CONFLICT_MIN_SCORE:
+                continue
+            if score < MATCH_THRESHOLD and not shares_enough_words(film["title"], entry[0]):
                 continue
             if (score, year_ok) > best_key:
                 best_key = (score, year_ok)
