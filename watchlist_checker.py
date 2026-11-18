@@ -1044,6 +1044,10 @@ def register_scheduled_task():
     lookahead_days — e.g. a 3-day lookahead paired with a 3-day interval
     means every showtime gets covered by some run, without long gaps.
     """
+    if sys.platform != "win32":
+        print("--schedule is only supported on Windows (Task Scheduler). On macOS/Linux, "
+              f"use cron to run {os.path.basename(__file__)} directly (see README).")
+        return
     import subprocess
     script    = os.path.abspath(__file__)
     python    = sys.executable

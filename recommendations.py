@@ -584,6 +584,10 @@ def register_scheduled_task():
     ("Letterboxd Recommendations (1)", "Letterboxd Recommendations (15)").
     Old tasks matching "Letterboxd Recommendations*" are removed first.
     """
+    if sys.platform != "win32":
+        print("--schedule is only supported on Windows (Task Scheduler). On macOS/Linux, "
+              f"use cron to run {os.path.basename(__file__)} directly (see README).")
+        return
     import subprocess
     script   = os.path.abspath(__file__)
     python   = sys.executable
