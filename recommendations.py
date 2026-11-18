@@ -889,10 +889,17 @@ def main():
             })
 
     if not recs_by_date:
-        return send_failure([
-            f"Claude suggested {len(recommendations)} film(s), but none matched a current showing "
-            "with showtimes."
-        ])
+        # Claude answered, but none of its picks map to a showing: nothing to send this
+        # month, which is a quiet outcome rather than an outage (unlike an empty reply).
+        print("None of Claude's picks matched a current showing — nothing to recommend.")
+        sent = send_email(
+            f"{'⚠ ' if warnings else ''}🎬 Marquee: nothing new to recommend this month — {LOCATION} theatres",
+            build_reco_email(
+                {}, warnings=warnings, unchecked=tuple(theatre_problems),
+                empty_note="None of Claude's picks this month matched a film with upcoming showtimes.",
+            ),
+        )
+        return 1 if (theatre_problems or not sent) else 0
 
     for date_str in recs_by_date:
         recs_by_date[date_str].sort(key=lambda f: f["title"])

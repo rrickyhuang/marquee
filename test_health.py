@@ -454,9 +454,20 @@ def test_recs_empty_claude_reply_fails_the_run(monkeypatch):
     assert status == 1 and "Claude returned no recommendations" in sent[0][1]
 
 
-def test_recs_picks_that_match_no_showing_fail_the_run(monkeypatch):
+def test_recs_picks_that_match_no_showing_send_the_soft_note(monkeypatch):
     status, sent = _run_recs(monkeypatch, recs=[{"title": "Zzzzzz Qqqq", "year": "2001", "reason": "r"}])
-    assert status == 1 and "none matched a current showing" in sent[0][1]
+    assert status == 0 and len(sent) == 1
+    subject, html = sent[0]
+    assert "nothing new to recommend" in subject and not subject.startswith("⚠")
+    assert "matched a film with upcoming showtimes" in html and "This run" not in html
+
+
+def test_recs_unmatched_picks_still_flag_unreadable_theatres(monkeypatch):
+    bad = {"state": "failed", "reason": "could not fetch the page (HTTP Error 404)"}
+    status, sent = _run_recs(monkeypatch, recs=[{"title": "Zzzzzz Qqqq", "year": "2001", "reason": "r"}],
+                             statuses={"Alpha Cinema": OK, "Beta Cinema": bad})
+    assert status == 1 and sent[0][0].startswith("⚠")
+    assert "Beta Cinema: could not fetch the page" in sent[0][1]
 
 
 def test_recs_nothing_eligible_sends_a_short_note_and_is_not_a_failure(monkeypatch):
