@@ -10,6 +10,7 @@
 !watchlist_checker.py
 !recommendations.py
 !run_watchlist_checker.bat
+!run_watchlist_checker.sh
 !requirements.txt
 !config.example.yaml
 !.env.example
@@ -17,6 +18,10 @@
 !test_schedule.py
 !schedule_settings.py
 !test_email_html.py
+
+# Docs
+!docs/
+!docs/vps-setup.md
 
 # Allow .claude config (but not local overrides)
 !.claude/

@@ -40,6 +40,9 @@ homepage URL (for email links). Find CinemaClock URLs at https://www.cinemaclock
 - Watchlist digest: `watchlist_checker.py` — runs every `watchlist.schedule_interval_days`
   at `watchlist.schedule_time` (Windows Task Scheduler, `/sc daily /mo N`). Kept in step
   with `watchlist.lookahead_days` so runs cover the calendar without gaps or overlap.
+- On the Linux VPS the digest runs from cron via `run_watchlist_checker.sh` (logs to
+  `logs/watchlist.log`, pings healthchecks.io); setup in `docs/vps-setup.md`. Server
+  timezone must match the user's local time (the script uses `date.today()`)
 - Monthly recommendations: `recommendations.py` — day(s)/time from `config.yaml` (`recommendations.schedule_*`), via Windows Task Scheduler
 - Secrets in `.env`: `GMAIL_APP_PASSWORD`, `ANTHROPIC_API_KEY` (see `.env.example`)
 - Email addresses and all other settings in `config.yaml`

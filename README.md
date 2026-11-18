@@ -81,9 +81,13 @@ default 3) rather than a fixed weekday, so it can be kept in step with
 `watchlist.lookahead_days` — matching intervals means every showtime gets covered by
 some run, without long gaps between digests.
 
-On macOS/Linux, `--schedule` isn't supported yet — use `cron` to run the scripts on your
-own schedule (e.g. `0 20 */3 * * python /path/to/watchlist_checker.py` for every 3 days
-at 8pm).
+### Scheduling (Linux server)
+
+`--schedule` is Windows-only. On an always-on Linux box, use cron with
+`run_watchlist_checker.sh`, which logs each run to `logs/watchlist.log` and optionally
+pings [healthchecks.io](https://healthchecks.io) (`HEALTHCHECKS_URL` in `.env`) so a failed
+or missed run alerts you. See [docs/vps-setup.md](docs/vps-setup.md) for the full setup
+(user, venv, timezone, secrets, cron line, log rotation).
 
 ## How it works
 
@@ -103,8 +107,8 @@ at 8pm).
 - **CinemaClock-only.** Marquee scrapes CinemaClock, so it only works for theatres
   listed there. Scraping depends on CinemaClock's current HTML — if they redesign, the
   parser may need updating.
-- **Windows-first scheduling.** Manual runs are cross-platform; automatic scheduling is
-  Windows-only for now (see above for the cron workaround).
+- **No built-in scheduler outside Windows.** `--schedule` registers a Task Scheduler
+  entry on Windows only; on Linux you add the cron line yourself (see above).
 - **Gmail-based email.** Sending uses Gmail SMTP with an app password. Other providers
   would need a small change to `send_email()`.
 
@@ -116,6 +120,9 @@ at 8pm).
 | `recommendations.py` | Monthly AI recommendation digest |
 | `config.example.yaml` | Template for your `config.yaml` (gitignored) |
 | `.env.example` | Template for your secrets (`.env`, gitignored) |
+| `run_watchlist_checker.sh` | Cron wrapper: logging + healthcheck pings (Linux) |
+| `docs/vps-setup.md` | Running Marquee on a Linux server |
+| `test_wrapper.py` | Tests for the cron wrapper |
 | `test_schedule.py` | Tests for the scheduling logic |
 | `conftest.py` | Pytest setup (stubs config so scripts import cleanly) |
 | `CLAUDE.md` | Context for AI assistants working on the repo |
