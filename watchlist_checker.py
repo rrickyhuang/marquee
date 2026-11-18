@@ -1067,6 +1067,10 @@ def register_scheduled_task():
     lookahead_days — e.g. a 3-day lookahead paired with a 3-day interval
     means every showtime gets covered by some run, without long gaps.
     """
+    if sys.platform != "win32":
+        # Exit non-zero so a setup script or CI step doesn't mistake this for a registered task.
+        from schedule_settings import unsupported_platform_message
+        sys.exit(unsupported_platform_message(os.path.basename(__file__)))
     import subprocess
     script    = os.path.abspath(__file__)
     python    = sys.executable

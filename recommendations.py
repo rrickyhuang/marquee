@@ -584,6 +584,10 @@ def register_scheduled_task():
     ("Letterboxd Recommendations (1)", "Letterboxd Recommendations (15)").
     Old tasks matching "Letterboxd Recommendations*" are removed first.
     """
+    if sys.platform != "win32":
+        # Exit non-zero so a setup script or CI step doesn't mistake this for a registered task.
+        from schedule_settings import unsupported_platform_message
+        sys.exit(unsupported_platform_message(os.path.basename(__file__)))
     import subprocess
     script   = os.path.abspath(__file__)
     python   = sys.executable

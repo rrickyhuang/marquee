@@ -1,8 +1,31 @@
 """Tests for register_scheduled_task() in both scripts."""
+import sys
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 import watchlist_checker
 import recommendations
+
+
+@pytest.fixture(autouse=True)
+def _windows_platform(monkeypatch):
+    """register_scheduled_task() is Windows-only; pin the platform so the tests
+    exercise the schtasks path wherever they run. Overridden in the non-Windows tests."""
+    monkeypatch.setattr(sys, "platform", "win32")
+
+
+@pytest.mark.parametrize("module", [watchlist_checker, recommendations])
+def test_schedule_fails_off_windows_without_registering_anything(module, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    with patch("subprocess.run") as mock_run:
+        with pytest.raises(SystemExit) as exc:
+            module.register_scheduled_task()
+    mock_run.assert_not_called()
+    assert exc.value.code not in (0, None)          # non-zero status for scripts and CI
+    assert "only supported on Windows" in exc.value.code
+    assert "cron" in exc.value.code
+    assert module.__file__.rsplit("/", 1)[-1] in exc.value.code
 
 
 # ── watchlist_checker ─────────────────────────────────────────────────────────

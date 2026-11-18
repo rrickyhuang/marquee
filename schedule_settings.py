@@ -8,6 +8,12 @@ undoing them.
 import subprocess
 
 
+def unsupported_platform_message(script_name):
+    """What `--schedule` says off Windows, where there is no Task Scheduler."""
+    return ("--schedule is only supported on Windows (Task Scheduler). On macOS/Linux, "
+            f"use cron to run {script_name} directly (see README).")
+
+
 def apply_task_settings(task_names):
     """Make each task catch up after a missed run, wake the PC, and run on battery.
 
