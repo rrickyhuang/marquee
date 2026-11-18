@@ -12,7 +12,6 @@
 !requirements.txt
 !config.example.yaml
 !.env.example
-!test_links.py
 !conftest.py
 !test_schedule.py
 !schedule_settings.py
