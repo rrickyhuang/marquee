@@ -125,11 +125,18 @@ def similarity(a, b):
     return SequenceMatcher(None, normalize(a), normalize(b)).ratio()
 
 
-def ratio_at_least(a, b, threshold):
+def ratio_at_least(a, b, threshold, matcher=None):
     """Same result as SequenceMatcher(None, a, b).ratio() >= threshold, but skips the
     full comparison when the cheap upper bounds (length, then character counts)
-    already fall below the threshold."""
-    s = SequenceMatcher(None, a, b)
+    already fall below the threshold.
+
+    `matcher` may be a SequenceMatcher(None, "", b) built once and reused for many
+    `a`s: SequenceMatcher indexes its second string up front, so keeping `b` fixed
+    as the second string (and `a` varying) amortises that cost without changing the
+    argument order, which ratio() is sensitive to.
+    """
+    s = matcher if matcher is not None else SequenceMatcher(None, "", b)
+    s.set_seq1(a)
     return (s.real_quick_ratio() >= threshold
             and s.quick_ratio() >= threshold
             and s.ratio() >= threshold)
@@ -672,11 +679,17 @@ def main():
     print(f"  Watchlist (total):{len(watchlist_norms)} titles")
     exclude_norms = watched_norms | watchlist_norms
 
+    # One matcher per excluded title, indexed once and reused for every film.
+    exclude_matchers = {ex: SequenceMatcher(None, "", ex) for ex in exclude_norms}
+
     def is_excluded(title):
         norm = normalize(title)
         if norm in exclude_norms:
             return True
-        return any(ratio_at_least(norm, ex, EXCLUDE_THRESHOLD) for ex in exclude_norms)
+        return any(
+            ratio_at_least(norm, ex, EXCLUDE_THRESHOLD, matcher)
+            for ex, matcher in exclude_matchers.items()
+        )
 
     # 2. Scrape theatres, merge into unique-film dict
     print("\nScraping theatres...")
