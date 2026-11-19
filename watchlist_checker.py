@@ -21,6 +21,7 @@ import io
 import os
 import re
 import smtplib
+import ssl
 import sys
 import time
 import unicodedata
@@ -1087,6 +1088,13 @@ def build_failure_html(reasons):
     return _wrap_email("Run Failed", body, {})
 
 
+# STARTTLS on 587, not implicit TLS on 465: many hosts block outbound 465 (and 25) by
+# default, and a blocked port otherwise hangs until the OS gives up on the connect.
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_TIMEOUT = 30
+
+
 def send_email(subject, html_body):
     if not GMAIL_APP_PASSWORD:
         print("Email not configured. Set GMAIL_APP_PASSWORD in .env.")
@@ -1098,7 +1106,8 @@ def send_email(subject, html_body):
         msg["To"] = NOTIFY_EMAIL
         msg.attach(MIMEText(html_body, "html"))
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
+            server.starttls(context=ssl.create_default_context())
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             server.sendmail(GMAIL_ADDRESS, NOTIFY_EMAIL, msg.as_string())
         print(f"✓ Email sent to {NOTIFY_EMAIL}")

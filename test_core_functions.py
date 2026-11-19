@@ -190,3 +190,59 @@ def test_matching_year_beats_conflicting_year_for_same_title(thresholds):
     wl = [("Dune", "1984", "old"), ("Dune", "2021", "new")]
     matches, _ = wc.match_against_watchlist([_film("Dune", "2021")], wl)
     assert [m["lb_url"] for m in matches] == ["new"]
+
+
+# ── send_email ────────────────────────────────────────────────────────────────
+
+class _FakeSMTP:
+    """Records the SMTP conversation; `fail_on` names a step that raises OSError."""
+    calls = []
+    fail_on = None
+
+    def __init__(self, host, port, timeout=None):
+        type(self).calls.append(("connect", host, port, timeout))
+        if type(self).fail_on == "connect":
+            raise OSError(110, "Connection timed out")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def starttls(self, context=None):
+        type(self).calls.append(("starttls", context))
+
+    def login(self, user, password):
+        type(self).calls.append(("login", user))
+
+    def sendmail(self, sender, to, msg):
+        type(self).calls.append(("sendmail", sender, to))
+
+
+@pytest.fixture
+def fake_smtp(monkeypatch):
+    _FakeSMTP.calls, _FakeSMTP.fail_on = [], None
+    monkeypatch.setattr(wc.smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setattr(wc, "GMAIL_APP_PASSWORD", "not-a-real-password")
+    return _FakeSMTP
+
+
+def test_send_email_uses_starttls_on_587_with_timeout(fake_smtp):
+    assert wc.send_email("subject", "<p>hi</p>") is True
+    steps = [c[0] for c in fake_smtp.calls]
+    assert steps == ["connect", "starttls", "login", "sendmail"]  # TLS before credentials
+    assert fake_smtp.calls[0][1:] == ("smtp.gmail.com", 587, wc.SMTP_TIMEOUT)
+    assert fake_smtp.calls[1][1] is not None  # explicit (verifying) SSL context
+
+
+def test_send_email_reports_failure_when_port_unreachable(fake_smtp):
+    fake_smtp.fail_on = "connect"
+    assert wc.send_email("subject", "<p>hi</p>") is False
+    assert [c[0] for c in fake_smtp.calls] == ["connect"]
+
+
+def test_send_email_without_password_does_not_connect(fake_smtp, monkeypatch):
+    monkeypatch.setattr(wc, "GMAIL_APP_PASSWORD", "")
+    assert wc.send_email("subject", "<p>hi</p>") is False
+    assert fake_smtp.calls == []
