@@ -44,9 +44,14 @@ scp -p config.yaml .env letterboxd-*.zip marquee@YOUR_VPS:marquee/    # -p keeps
 ssh marquee@YOUR_VPS 'chmod 600 ~/marquee/.env ~/marquee/config.yaml'
 ```
 
-`.env` holds `GMAIL_APP_PASSWORD` (and `ANTHROPIC_API_KEY` for recommendations). Mode 600
-means only the `marquee` user can read it. Once the VPS run is confirmed working, delete
-the laptop's copy of the app password and revoke/regenerate it if the laptop is ever lost.
+On the VPS, edit `.env` down to what the watchlist digest needs: `GMAIL_APP_PASSWORD`
+(and `HEALTHCHECKS_URL`, see below). Delete the `ANTHROPIC_API_KEY` line there; only
+`recommendations.py` uses it, and it doesn't run on the server yet. Mode 600 means only
+the `marquee` user can read the file.
+
+Keep the laptop's `.env` for now: `recommendations.py` still runs from the laptop. Remove
+its copy of the app password only once that script has moved to the server too (and
+regenerate the app password if the laptop is ever lost).
 
 ## 4. Healthcheck
 
